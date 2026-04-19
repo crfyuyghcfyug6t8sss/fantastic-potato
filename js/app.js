@@ -1625,10 +1625,10 @@ function openPromoModal(jsonStr) {
               <div class="age-row">
                 <span class="text-sm text-muted">من</span>
                 <input type="number" class="form-control age-input" id="age-min" min="13" max="65" value="18"
-                  oninput="syncAge('min')">
+                  onblur="syncAge('min')">
                 <span class="text-sm text-muted">إلى</span>
                 <input type="number" class="form-control age-input" id="age-max" min="13" max="65" value="65"
-                  oninput="syncAge('max')">
+                  onblur="syncAge('max')">
                 <span class="text-sm text-muted">سنة</span>
               </div>
             </div>
@@ -1717,8 +1717,13 @@ function syncNum(field, val, fromText) {
 function syncAge(which) {
   const minI = q('#age-min'), maxI = q('#age-max');
   if (!minI || !maxI) return;
-  let mn = Math.max(13, Math.min(65, parseInt(minI.value) || 18));
-  let mx = Math.max(13, Math.min(65, parseInt(maxI.value) || 65));
+  const rawMn = minI.value.trim(), rawMx = maxI.value.trim();
+  let mn = rawMn === '' ? 18 : parseInt(rawMn);
+  let mx = rawMx === '' ? 65 : parseInt(rawMx);
+  if (isNaN(mn)) mn = 18;
+  if (isNaN(mx)) mx = 65;
+  mn = Math.max(13, Math.min(65, mn));
+  mx = Math.max(13, Math.min(65, mx));
   if (mn > mx) { which === 'min' ? (mx = mn) : (mn = mx); }
   minI.value = mn; maxI.value = mx;
 }
@@ -2724,36 +2729,57 @@ function phFilter(type, tabEl) {
 }
 
 function renderPhTimeline(items) {
-  return `<div class="card"><div class="table-wrap"><table>
-    <thead><tr>
-      <th>النوع</th><th>التفاصيل</th><th>المبلغ</th><th>الحالة</th><th>ملاحظة</th><th>التاريخ</th>
-    </tr></thead>
-    <tbody>
-      ${items.map(item => {
-        const isDeposit  = item.type === 'deposit';
-        const isRefunded = item.refunded;
-        const amountColor = isDeposit ? 'var(--green)' : isRefunded ? 'var(--blue)' : 'var(--red)';
-        const amountSign  = isDeposit ? '+' : isRefunded ? '↩ ' : '−';
-        const typeLabel   = isDeposit
-          ? `<span class="badge badge-green" style="display:inline-flex;align-items:center;gap:4px">${IC.card} شحن</span>`
-          : isRefunded
-            ? `<span class="badge badge-blue" style="display:inline-flex;align-items:center;gap:4px">${IC.history} استرداد</span>`
-            : `<span class="badge badge-purple" style="display:inline-flex;align-items:center;gap:4px">${IC.rocket} حملة</span>`;
+  const rows = items.map(item => {
+    const isDeposit  = item.type === 'deposit';
+    const isRefunded = item.refunded;
+    const amountColor = isDeposit ? 'var(--green)' : isRefunded ? 'var(--blue)' : 'var(--red)';
+    const amountSign  = isDeposit ? '+' : isRefunded ? '↩ ' : '−';
+    const typeLabel   = isDeposit
+      ? `<span class="badge badge-green" style="display:inline-flex;align-items:center;gap:4px">${IC.card} شحن</span>`
+      : isRefunded
+        ? `<span class="badge badge-blue" style="display:inline-flex;align-items:center;gap:4px">${IC.history} استرداد</span>`
+        : `<span class="badge badge-purple" style="display:inline-flex;align-items:center;gap:4px">${IC.rocket} حملة</span>`;
+    return { item, isDeposit, isRefunded, amountColor, amountSign, typeLabel };
+  });
 
-        return `<tr>
-          <td>${typeLabel}</td>
-          <td>
-            <div style="font-weight:600;font-size:13px">${item.label}</div>
-            ${item.receipt ? `<a href="${esc(item.receipt)}" target="_blank" class="btn btn-ghost btn-xs" style="margin-top:4px;display:inline-flex;align-items:center;gap:4px">${IC.paperclip} إيصال</a>` : ''}
-          </td>
-          <td><strong style="color:${amountColor};font-size:15px">${amountSign}$${item.amount.toFixed(2)}</strong></td>
-          <td>${statusBadge(item.status)}</td>
-          <td class="text-sm text-muted">${item.note ? esc(item.note) : '—'}</td>
-          <td class="text-sm text-muted" style="white-space:nowrap">${fmtDate(item.date)}</td>
-        </tr>`;
-      }).join('')}
-    </tbody>
-  </table></div></div>`;
+  const tableRows = rows.map(({ item, amountColor, amountSign, typeLabel }) => `
+    <tr>
+      <td>${typeLabel}</td>
+      <td>
+        <div style="font-weight:600;font-size:13px">${item.label}</div>
+        ${item.receipt ? `<a href="${esc(item.receipt)}" target="_blank" class="btn btn-ghost btn-xs" style="margin-top:4px;display:inline-flex;align-items:center;gap:4px">${IC.paperclip} إيصال</a>` : ''}
+      </td>
+      <td><strong style="color:${amountColor};font-size:15px">${amountSign}$${item.amount.toFixed(2)}</strong></td>
+      <td>${statusBadge(item.status)}</td>
+      <td class="text-sm text-muted">${item.note ? esc(item.note) : '—'}</td>
+      <td class="text-sm text-muted" style="white-space:nowrap">${fmtDate(item.date)}</td>
+    </tr>`).join('');
+
+  const mobileCards = rows.map(({ item, amountColor, amountSign, typeLabel }) => `
+    <div class="ph-card">
+      <div class="ph-card-top">
+        ${typeLabel}
+        <strong style="color:${amountColor};font-size:15px">${amountSign}$${item.amount.toFixed(2)}</strong>
+      </div>
+      <div class="ph-card-label">${item.label}</div>
+      <div class="ph-card-meta">
+        ${statusBadge(item.status)}
+        <span class="text-sm text-muted">${fmtDate(item.date)}</span>
+      </div>
+      ${item.note ? `<div class="ph-card-note"><span class="text-muted">ملاحظة: </span>${esc(item.note)}</div>` : ''}
+      ${item.receipt ? `<a href="${esc(item.receipt)}" target="_blank" class="btn btn-ghost btn-xs" style="margin-top:8px;display:inline-flex;align-items:center;gap:4px">${IC.paperclip} إيصال</a>` : ''}
+    </div>`).join('');
+
+  return `
+    <div class="card ph-table-card">
+      <div class="table-wrap"><table>
+        <thead><tr>
+          <th>النوع</th><th>التفاصيل</th><th>المبلغ</th><th>الحالة</th><th>ملاحظة</th><th>التاريخ</th>
+        </tr></thead>
+        <tbody>${tableRows}</tbody>
+      </table></div>
+    </div>
+    <div class="ph-cards-mobile">${mobileCards}</div>`;
 }
 
 // ─── WhatsApp Broadcast Panel ─────────────────────────────────────────────────
