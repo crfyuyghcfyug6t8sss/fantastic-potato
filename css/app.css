@@ -1329,6 +1329,74 @@ tr:hover td { background: rgba(255,255,255,.02); }
 }
 
 /* ══════════════════════════════════════════════════════════════════════════ */
+/* ─── PROMOTE MODAL — Full-page on mobile (≤ 768px) ──────────────────────── */
+/* ══════════════════════════════════════════════════════════════════════════ */
+@media (max-width: 768px) {
+  #promo-overlay {
+    padding: 0;
+    align-items: stretch;
+    justify-content: stretch;
+    background: var(--bg);
+    backdrop-filter: none;
+    overflow: hidden;
+  }
+  #promo-overlay > .modal {
+    width: 100%;
+    max-width: 100%;
+    height: 100vh;
+    height: 100dvh;
+    max-height: none;
+    border-radius: 0;
+    border: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    animation: none;
+    box-shadow: none;
+  }
+  #promo-overlay .modal-header {
+    position: sticky;
+    top: 0;
+    padding: 12px 14px;
+    background: var(--card);
+    z-index: 6;
+    flex-shrink: 0;
+  }
+  #promo-overlay .modal-title { font-size: 16px; }
+  #promo-overlay .modal-body {
+    flex: 1 1 auto;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    padding: 14px;
+  }
+  #promo-overlay .modal-footer {
+    position: sticky;
+    bottom: 0;
+    padding: 10px 14px calc(10px + env(safe-area-inset-bottom));
+    background: var(--card);
+    box-shadow: 0 -6px 18px rgba(0,0,0,.18);
+    z-index: 6;
+    flex-shrink: 0;
+    flex-wrap: nowrap;
+  }
+  #promo-overlay .modal-footer .btn { flex: 1; min-height: 46px; font-size: 14px; }
+  #promo-overlay .grid-2 { grid-template-columns: 1fr; gap: 14px; }
+  #promo-overlay .form-group { margin-bottom: 14px; }
+  #promo-overlay .obj-pills { grid-template-columns: 1fr 1fr; }
+  #promo-overlay .obj-pill { padding: 12px 8px; font-size: 12px; }
+  #promo-overlay .budget-display { font-size: 26px; margin: 6px 0; }
+  #promo-overlay .range-wrap { gap: 8px; }
+  #promo-overlay #promo-map { height: 200px; margin-top: 8px; }
+  #promo-overlay textarea.form-control { min-height: 70px; }
+}
+
+@media (max-width: 480px) {
+  #promo-overlay #promo-map { height: 180px; }
+  #promo-overlay .modal-body { padding: 12px; }
+  #promo-overlay .obj-pill { font-size: 11px; padding: 11px 6px; }
+}
+
+/* ══════════════════════════════════════════════════════════════════════════ */
 /* ─── TOAST STACK (top-center, RTL) ──────────────────────────────────────── */
 /* ══════════════════════════════════════════════════════════════════════════ */
 .toast-stack {
