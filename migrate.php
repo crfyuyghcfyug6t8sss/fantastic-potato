@@ -85,6 +85,10 @@ runStep("campaigns.fb_campaign_id", function () use ($pdo, $db) {
     if (columnExists($pdo, $db, 'campaigns', 'fb_campaign_id')) return 'skip';
     $pdo->exec("ALTER TABLE campaigns ADD COLUMN fb_campaign_id VARCHAR(100) NULL AFTER results_note");
 });
+runStep("campaigns.last_insights_at", function () use ($pdo, $db) {
+    if (columnExists($pdo, $db, 'campaigns', 'last_insights_at')) return 'skip';
+    $pdo->exec("ALTER TABLE campaigns ADD COLUMN last_insights_at DATETIME NULL AFTER fb_campaign_id");
+});
 runStep("campaigns.objective enum", function () use ($pdo) {
     $pdo->exec("ALTER TABLE campaigns MODIFY COLUMN objective
                 ENUM('followers','messages','engagement','visits','sales','video_views')

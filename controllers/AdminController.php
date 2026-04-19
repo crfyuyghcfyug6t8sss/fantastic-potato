@@ -500,94 +500,32 @@ class AdminController {
 
         $localId    = (int) ($data['id'] ?? 0);
         $fbCampaign = trim((string) ($data['fb_campaign_id'] ?? ''));
-        $platform   = (string) ($data['platform'] ?? 'all'); // facebook | instagram | all
-        $persist    = !empty($data['persist']);
+        $platform   = (string) ($data['platform'] ?? 'all');
 
         if ($fbCampaign === '') jsonError('معرّف الحملة على فيسبوك (campaign_id) مطلوب');
         if (!in_array($platform, ['facebook','instagram','all'], true)) $platform = 'all';
 
-        $token = $this->getAdminToken('facebook');
-        if (!$token) jsonError('لم يتم ضبط Access Token الخاص بالأدمن', 400);
-
-        $params = [
-            'fields'     => 'impressions,clicks,spend,cpc,ctr',
-            'breakdowns' => 'publisher_platform',
-            'level'      => 'campaign',
-        ];
-        if ($platform !== 'all') {
-            $params['filtering'] = json_encode([[
-                'field'    => 'publisher_platform',
-                'operator' => 'IN',
-                'value'    => [$platform],
-            ]]);
-        }
-
-        $resp = fbGet('/' . $fbCampaign . '/insights', $token, $params);
-
-        if (isset($resp['error'])) {
-            $err = $resp['error'];
-            $msg = $err['message'] ?? 'خطأ من فيسبوك';
-            $code = $err['code'] ?? 0;
-            $sub  = $err['error_subcode'] ?? 0;
-            if ($code === 190 || $sub === 463 || $sub === 467) {
+        // Always persist when admin links a campaign — that way the user gets
+        // auto-refresh on their next visit.
+        $r = fbFetchAndStoreInsights($localId, $fbCampaign, $platform);
+        if (!$r['ok']) {
+            $msg = $r['error'] ?? 'خطأ من فيسبوك';
+            $low = mb_strtolower($msg);
+            if (strpos($low, 'expired') !== false || strpos($low, 'token') !== false) {
                 jsonError('التوكن منتهي أو غير صالح — يرجى تحديث Access Token', 401);
             }
-            if ($code === 100) {
+            if (strpos($low, 'does not exist') !== false || strpos($low, 'unsupported') !== false) {
                 jsonError('معرّف الحملة (campaign_id) غير صحيح', 404);
             }
-            if ($code === 200 || $code === 10) {
+            if (strpos($low, 'permission') !== false || strpos($low, 'ads_read') !== false) {
                 jsonError('صلاحيات غير كافية — يلزم توكن بصلاحية ads_read', 403);
             }
             jsonError('فيسبوك: ' . $msg, 500);
         }
 
-        $rows = $resp['data'] ?? [];
-        $byPlatform = [];
-        $totals = ['impressions' => 0, 'clicks' => 0, 'spend' => 0.0];
-
-        foreach ($rows as $r) {
-            $plat = $r['publisher_platform'] ?? 'unknown';
-            $imp  = (int)   ($r['impressions'] ?? 0);
-            $clk  = (int)   ($r['clicks']      ?? 0);
-            $spd  = (float) ($r['spend']       ?? 0);
-            $cpc  = (float) ($r['cpc']         ?? 0);
-            $ctr  = (float) ($r['ctr']         ?? 0);
-
-            $byPlatform[] = [
-                'platform'    => $plat,
-                'impressions' => $imp,
-                'clicks'      => $clk,
-                'spend'       => $spd,
-                'cpc'         => $cpc,
-                'ctr'         => $ctr,
-            ];
-            $totals['impressions'] += $imp;
-            $totals['clicks']      += $clk;
-            $totals['spend']       += $spd;
-        }
-
-        $totals['ctr'] = $totals['impressions'] > 0
-            ? round(($totals['clicks'] / $totals['impressions']) * 100, 2)
-            : 0.0;
-        $totals['cpc'] = $totals['clicks'] > 0
-            ? round($totals['spend'] / $totals['clicks'], 2)
-            : 0.0;
-
-        if ($persist && $localId > 0) {
-            getDB()->prepare(
-                'UPDATE campaigns SET impressions=?, clicks=?, spend=?, fb_campaign_id=? WHERE id=?'
-            )->execute([
-                $totals['impressions'],
-                $totals['clicks'],
-                $totals['spend'],
-                $fbCampaign,
-                $localId,
-            ]);
-        }
-
         jsonSuccess([
-            'totals'      => $totals,
-            'by_platform' => $byPlatform,
+            'totals'      => $r['totals'],
+            'by_platform' => $r['by_platform'],
             'platform'    => $platform,
         ], 'تم جلب النتائج من فيسبوك');
     }

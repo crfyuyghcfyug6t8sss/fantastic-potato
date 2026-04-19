@@ -1993,7 +1993,7 @@ function userCampaignCard(c, i) {
 }
 
 // ── Campaign details modal ──
-async function openCampaignDetails(id) {
+async function openCampaignDetails(id, force) {
   document.getElementById('camp-detail-overlay')?.remove();
   const overlay = document.createElement('div');
   overlay.id = 'camp-detail-overlay';
@@ -2011,7 +2011,7 @@ async function openCampaignDetails(id) {
     </div>`;
   document.body.appendChild(overlay);
 
-  const res = await API.get('user/campaign-details?id=' + id);
+  const res = await API.get('user/campaign-details?id=' + id + (force ? '&force=1' : ''));
   const body = document.getElementById('camp-detail-body');
   if (!res.success) { body.innerHTML = `<div class="alert alert-error">${esc(res.message)}</div>`; return; }
   const c = res.campaign;
@@ -2042,7 +2042,14 @@ async function openCampaignDetails(id) {
       ${c.post_url ? `<div style="grid-column:1/-1"><span class="text-muted">رابط المنشور: </span><a href="${esc(c.post_url)}" target="_blank" dir="ltr">${esc(c.post_url)}</a></div>` : ''}
     </div>
 
-    <h4 style="margin:14px 0 10px;font-size:14px">نتائج الإعلان</h4>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin:14px 0 10px;gap:8px;flex-wrap:wrap">
+      <h4 style="margin:0;font-size:14px">نتائج الإعلان</h4>
+      ${c.fb_campaign_id ? `
+        <div style="display:flex;align-items:center;gap:8px">
+          <span class="text-sm text-muted">${c.last_insights_at ? 'آخر تحديث: ' + fmtDate(c.last_insights_at) : 'لم يتم التحديث بعد'}</span>
+          <button class="btn btn-ghost btn-xs" onclick="refreshCampaignDetails(${c.id})">${IC.history} تحديث</button>
+        </div>` : ''}
+    </div>
     ${res.has_results ? `
       <div class="grid-2" style="gap:10px">
         ${statResult('المشاهدات', Number(c.impressions).toLocaleString())}
@@ -2050,6 +2057,20 @@ async function openCampaignDetails(id) {
         ${statResult('CTR', ctr + '%')}
         ${statResult('المصروف', '$' + Number(c.spend).toFixed(2))}
       </div>
+      ${(res.by_platform && res.by_platform.length) ? `
+        <div class="table-wrap" style="border:1px solid var(--border);border-radius:8px;margin-top:10px">
+          <table style="font-size:12px">
+            <thead><tr><th>المنصة</th><th>المشاهدات</th><th>النقرات</th><th>المصروف</th><th>CTR</th></tr></thead>
+            <tbody>${res.by_platform.map(p => `
+              <tr>
+                <td>${esc(p.platform)}</td>
+                <td>${Number(p.impressions).toLocaleString()}</td>
+                <td>${Number(p.clicks).toLocaleString()}</td>
+                <td>$${Number(p.spend).toFixed(2)}</td>
+                <td>${Number(p.ctr).toFixed(2)}%</td>
+              </tr>`).join('')}</tbody>
+          </table>
+        </div>` : ''}
       ${c.results_note ? `<div class="alert alert-info mt-3"><strong>ملاحظة:</strong> ${esc(c.results_note)}</div>` : ''}
     ` : `
       <div class="empty-state" style="padding:30px 16px">
@@ -2061,6 +2082,10 @@ async function openCampaignDetails(id) {
 
     ${c.admin_note ? `<div class="alert ${c.status === 'rejected' ? 'alert-error' : 'alert-info'} mt-3"><strong>${c.status === 'rejected' ? 'سبب الرفض' : 'ملاحظة الأدمن'}:</strong> ${esc(c.admin_note)}</div>` : ''}
   `;
+}
+
+function refreshCampaignDetails(id) {
+  openCampaignDetails(id, true);
 }
 
 function statResult(label, value) {

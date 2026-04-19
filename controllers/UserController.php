@@ -336,12 +336,37 @@ class UserController {
         $stmt->execute([$id, $user['id']]);
         $c = $stmt->fetch();
         if (!$c) jsonError('الحملة غير موجودة', 404);
+
+        // Auto-refresh insights from Facebook (cache 5 minutes per campaign,
+        // bypass cache when ?force=1)
+        $byPlatform = [];
+        $force = !empty($_GET['force']);
+        if (!empty($c['fb_campaign_id'])) {
+            $stale = $force
+                || empty($c['last_insights_at'])
+                || (time() - strtotime($c['last_insights_at'])) > 300;
+            if ($stale) {
+                $r = fbFetchAndStoreInsights((int)$c['id'], (string)$c['fb_campaign_id']);
+                if ($r['ok']) {
+                    $c['impressions']      = $r['totals']['impressions'];
+                    $c['clicks']           = $r['totals']['clicks'];
+                    $c['spend']            = $r['totals']['spend'];
+                    $c['last_insights_at'] = date('Y-m-d H:i:s');
+                    $byPlatform            = $r['by_platform'];
+                }
+            }
+        }
+
         $c['locations'] = json_decode($c['locations'], true);
 
         $hasResults = ((int)$c['impressions'] + (int)$c['clicks'] + (float)$c['spend']) > 0
                        || !empty($c['results_note']);
 
-        jsonSuccess(['campaign' => $c, 'has_results' => $hasResults]);
+        jsonSuccess([
+            'campaign'    => $c,
+            'has_results' => $hasResults,
+            'by_platform' => $byPlatform,
+        ]);
     }
 
     // ─── Coupons (user) ────────────────────────────────────────────────────────

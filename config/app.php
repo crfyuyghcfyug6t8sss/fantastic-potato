@@ -78,6 +78,71 @@ function requireAdmin(): array {
 
 // ─── Facebook Graph API ───────────────────────────────────────────────────────
 
+/**
+ * Fetch live insights for a Facebook campaign and persist totals to a
+ * local campaign row. Returns ['ok' => bool, 'totals' => [...],
+ * 'by_platform' => [...], 'error' => string].
+ */
+function fbFetchAndStoreInsights(int $localId, string $fbCampaignId, string $platform = 'all'): array {
+    $db  = getDB();
+    $row = $db->prepare("SELECT access_token FROM admin_tokens WHERE platform='facebook' LIMIT 1");
+    $row->execute();
+    $r = $row->fetch();
+    if (!$r) return ['ok' => false, 'error' => 'لم يتم ضبط Access Token الخاص بالأدمن'];
+    $token = decryptToken($r['access_token']);
+
+    $params = [
+        'fields'     => 'impressions,clicks,spend,cpc,ctr',
+        'breakdowns' => 'publisher_platform',
+        'level'      => 'campaign',
+    ];
+    if (in_array($platform, ['facebook','instagram'], true)) {
+        $params['filtering'] = json_encode([[
+            'field' => 'publisher_platform', 'operator' => 'IN', 'value' => [$platform],
+        ]]);
+    }
+
+    $resp = fbGet('/' . $fbCampaignId . '/insights', $token, $params);
+    if (isset($resp['error'])) {
+        return ['ok' => false, 'error' => $resp['error']['message'] ?? 'خطأ من فيسبوك'];
+    }
+
+    $rows       = $resp['data'] ?? [];
+    $byPlatform = [];
+    $totals     = ['impressions' => 0, 'clicks' => 0, 'spend' => 0.0];
+    foreach ($rows as $r2) {
+        $imp = (int)   ($r2['impressions'] ?? 0);
+        $clk = (int)   ($r2['clicks']      ?? 0);
+        $spd = (float) ($r2['spend']       ?? 0);
+        $byPlatform[] = [
+            'platform'    => $r2['publisher_platform'] ?? 'unknown',
+            'impressions' => $imp,
+            'clicks'      => $clk,
+            'spend'       => $spd,
+            'cpc'         => (float)($r2['cpc'] ?? 0),
+            'ctr'         => (float)($r2['ctr'] ?? 0),
+        ];
+        $totals['impressions'] += $imp;
+        $totals['clicks']      += $clk;
+        $totals['spend']       += $spd;
+    }
+    $totals['ctr'] = $totals['impressions'] > 0
+        ? round(($totals['clicks'] / $totals['impressions']) * 100, 2) : 0.0;
+    $totals['cpc'] = $totals['clicks'] > 0
+        ? round($totals['spend'] / $totals['clicks'], 2) : 0.0;
+
+    if ($localId > 0) {
+        $db->prepare(
+            'UPDATE campaigns SET impressions=?, clicks=?, spend=?, fb_campaign_id=?, last_insights_at=NOW() WHERE id=?'
+        )->execute([
+            $totals['impressions'], $totals['clicks'], $totals['spend'],
+            $fbCampaignId, $localId,
+        ]);
+    }
+
+    return ['ok' => true, 'totals' => $totals, 'by_platform' => $byPlatform];
+}
+
 function fbGet(string $endpoint, string $token, array $params = []): array {
     $params['access_token'] = $token;
     $url = FACEBOOK_GRAPH_URL . $endpoint . '?' . http_build_query($params);

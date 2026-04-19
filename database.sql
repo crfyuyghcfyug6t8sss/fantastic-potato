@@ -97,6 +97,7 @@ CREATE TABLE IF NOT EXISTS campaigns (
     spend           DECIMAL(10,2) NOT NULL DEFAULT 0,
     results_note    TEXT NULL,
     fb_campaign_id  VARCHAR(100) NULL,
+    last_insights_at DATETIME NULL,
     status          ENUM('pending','approved','rejected','running','paused','completed') NOT NULL DEFAULT 'pending',
     admin_note      TEXT,
     created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
