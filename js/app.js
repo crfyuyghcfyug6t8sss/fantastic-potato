@@ -477,6 +477,7 @@ function navigate(id) {
   if (nav) nav.classList.add('active');
   const fn = sections[id];
   if (fn) fn();
+  closeSidebar();
 }
 
 // 
@@ -1614,36 +1615,41 @@ function openPromoModal(jsonStr) {
 
             <div class="form-group">
               <label class="form-label">الفئة العمرية</label>
-              <div class="range-wrap">
-                <span class="text-sm text-muted">18</span>
-                <input type="range" id="age-min" min="18" max="65" value="18" oninput="q('#age-min-val').textContent=this.value">
-                <span class="range-val" id="age-min-val">18</span>
-                <span class="text-sm text-muted">—</span>
-                <input type="range" id="age-max" min="18" max="65" value="65" oninput="q('#age-max-val').textContent=this.value">
-                <span class="range-val" id="age-max-val">65</span>
-                <span class="text-sm text-muted">65</span>
+              <div class="age-row">
+                <span class="text-sm text-muted">من</span>
+                <input type="number" class="form-control age-input" id="age-min" min="13" max="65" value="18"
+                  oninput="syncAge('min')">
+                <span class="text-sm text-muted">إلى</span>
+                <input type="number" class="form-control age-input" id="age-max" min="13" max="65" value="65"
+                  oninput="syncAge('max')">
+                <span class="text-sm text-muted">سنة</span>
               </div>
             </div>
 
             <div class="form-group">
               <label class="form-label">الميزانية اليومية</label>
-              <div class="budget-display"><span>$</span><span id="budget-display">5</span><span class="text-sm text-muted">/ يوم</span></div>
-              <div class="range-wrap">
-                <span class="text-sm text-muted">$2</span>
+              <div class="slider-with-input">
                 <input type="range" id="promo-budget" min="2" max="500" step="1" value="5"
-                  oninput="promoBudget=parseInt(this.value);q('#budget-display').textContent=this.value;updateBudgetPreview()">
-                <span class="text-sm text-muted">$500</span>
+                  oninput="syncNum('budget', this.value)">
+                <div class="num-box">
+                  <span class="num-prefix">$</span>
+                  <input type="number" id="promo-budget-num" min="2" max="500" step="1" value="5"
+                    oninput="syncNum('budget', this.value, true)">
+                  <span class="num-suffix">/ يوم</span>
+                </div>
               </div>
             </div>
 
             <div class="form-group">
-              <label class="form-label">مدة الحملة (أيام)</label>
-              <div class="budget-display"><span id="duration-display">5</span><span class="text-sm text-muted">يوم</span></div>
-              <div class="range-wrap">
-                <span class="text-sm text-muted">1</span>
+              <label class="form-label">مدة الحملة</label>
+              <div class="slider-with-input">
                 <input type="range" id="promo-duration" min="1" max="30" step="1" value="5"
-                  oninput="promoDuration=parseInt(this.value);q('#duration-display').textContent=this.value;updateBudgetPreview()">
-                <span class="text-sm text-muted">30</span>
+                  oninput="syncNum('duration', this.value)">
+                <div class="num-box">
+                  <input type="number" id="promo-duration-num" min="1" max="30" step="1" value="5"
+                    oninput="syncNum('duration', this.value, true)">
+                  <span class="num-suffix">يوم</span>
+                </div>
               </div>
             </div>
 
@@ -1664,10 +1670,10 @@ function openPromoModal(jsonStr) {
             <div id="promo-map"></div>
 
             <div class="form-group" style="margin-top:14px">
-              <label class="form-label">كلمات مفتاحية (يدوياً)</label>
+              <label class="form-label">الاهتمامات المطلوبة</label>
               <textarea class="form-control" id="promo-keywords" rows="2"
                 placeholder="مثال: عقارات، سيارات، رياضة..."></textarea>
-              <div class="text-sm text-muted" style="margin-top:4px">افصل بين الكلمات بفاصلة.</div>
+              <div class="text-sm text-muted" style="margin-top:4px">افصل بين الاهتمامات بفاصلة.</div>
             </div>
 
             <div class="form-group">
@@ -1686,6 +1692,33 @@ function openPromoModal(jsonStr) {
 
   // Load Leaflet map + initial preview
   setTimeout(() => { initPromoMap(); updateBudgetPreview(); }, 200);
+}
+
+function syncNum(field, val, fromText) {
+  const n = Math.max(1, parseInt(val) || 0);
+  if (field === 'budget') {
+    const clamped = Math.min(500, Math.max(2, n));
+    promoBudget = clamped;
+    const r = q('#promo-budget'), t = q('#promo-budget-num');
+    if (r && !fromText) t.value = clamped;
+    if (t &&  fromText) r.value = clamped;
+  } else if (field === 'duration') {
+    const clamped = Math.min(30, Math.max(1, n));
+    promoDuration = clamped;
+    const r = q('#promo-duration'), t = q('#promo-duration-num');
+    if (r && !fromText) t.value = clamped;
+    if (t &&  fromText) r.value = clamped;
+  }
+  updateBudgetPreview();
+}
+
+function syncAge(which) {
+  const minI = q('#age-min'), maxI = q('#age-max');
+  if (!minI || !maxI) return;
+  let mn = Math.max(13, Math.min(65, parseInt(minI.value) || 18));
+  let mx = Math.max(13, Math.min(65, parseInt(maxI.value) || 65));
+  if (mn > mx) { which === 'min' ? (mx = mn) : (mn = mx); }
+  minI.value = mn; maxI.value = mx;
 }
 
 function updateBudgetPreview() {
