@@ -15,6 +15,8 @@ CREATE TABLE IF NOT EXISTS users (
     password   VARCHAR(255)  NOT NULL,
     role       ENUM('admin','user') NOT NULL DEFAULT 'user',
     balance    DECIMAL(10,2) NOT NULL DEFAULT 0.00,
+    points     INT UNSIGNED  NOT NULL DEFAULT 0,
+    page_restricted TINYINT(1) NOT NULL DEFAULT 0,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -80,18 +82,48 @@ CREATE TABLE IF NOT EXISTS campaigns (
     post_id         VARCHAR(100) NOT NULL,
     post_message    TEXT,
     post_picture    TEXT,
+    post_url        VARCHAR(500) NULL,
     campaign_name   VARCHAR(255) NOT NULL,
-    objective       ENUM('followers','messages','engagement') NOT NULL DEFAULT 'engagement',
+    objective       ENUM('followers','messages','engagement','visits','sales','video_views') NOT NULL DEFAULT 'engagement',
     gender          ENUM('all','male','female') NOT NULL DEFAULT 'all',
     age_min         TINYINT UNSIGNED NOT NULL DEFAULT 18,
     age_max         TINYINT UNSIGNED NOT NULL DEFAULT 65,
     locations       JSON NOT NULL,
+    keywords        TEXT NULL,
     budget          DECIMAL(10,2) NOT NULL,
+    duration_days   INT UNSIGNED NOT NULL DEFAULT 1,
+    impressions     INT UNSIGNED NOT NULL DEFAULT 0,
+    clicks          INT UNSIGNED NOT NULL DEFAULT 0,
+    spend           DECIMAL(10,2) NOT NULL DEFAULT 0,
+    results_note    TEXT NULL,
     status          ENUM('pending','approved','rejected','running','paused','completed') NOT NULL DEFAULT 'pending',
     admin_note      TEXT,
     created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS coupons (
+    id           INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    code         VARCHAR(50)  NOT NULL UNIQUE,
+    type         ENUM('percent','fixed') NOT NULL DEFAULT 'fixed',
+    value        DECIMAL(10,2) NOT NULL,
+    max_uses     INT UNSIGNED NOT NULL DEFAULT 0,
+    used_count   INT UNSIGNED NOT NULL DEFAULT 0,
+    is_active    TINYINT(1)   NOT NULL DEFAULT 1,
+    created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS coupon_redemptions (
+    id          INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    coupon_id   INT UNSIGNED NOT NULL,
+    user_id     INT UNSIGNED NOT NULL,
+    amount      DECIMAL(10,2) NOT NULL,
+    created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_coupon_user (coupon_id, user_id),
+    FOREIGN KEY (coupon_id) REFERENCES coupons(id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id)   REFERENCES users(id)   ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 INSERT IGNORE INTO users (name, phone, password, role)
@@ -111,7 +143,13 @@ CREATE TABLE IF NOT EXISTS site_settings (
 
 INSERT IGNORE INTO site_settings (`key`, value) VALUES
 ('site_name', 'FB Manager'),
-('site_logo', NULL);
+('site_logo', NULL),
+('support_whatsapp', ''),
+('support_telegram', ''),
+('support_form_url', ''),
+('points_per_dollar', '1'),
+('points_to_dollar', '100'),
+('exchange_rate_usd_syp', '15000');
 
 -- ─── Page Link Requests ──────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS page_link_requests (
@@ -159,3 +197,20 @@ CREATE TABLE IF NOT EXISTS wa_messages (
 -- ALTER TABLE admin_tokens ADD UNIQUE KEY uq_platform (platform);
 -- ALTER TABLE pages ADD COLUMN platform ENUM('facebook','instagram') NOT NULL DEFAULT 'facebook' AFTER access_token;
 -- ALTER TABLE pages ADD COLUMN instagram_id VARCHAR(50) NULL AFTER platform;
+
+-- ─── Mobile Optimization & UX Migration ──────────────────────────────────────
+-- Run these if upgrading from a previous installation:
+-- ALTER TABLE users ADD COLUMN points INT UNSIGNED NOT NULL DEFAULT 0 AFTER balance;
+-- ALTER TABLE users ADD COLUMN page_restricted TINYINT(1) NOT NULL DEFAULT 0 AFTER points;
+-- ALTER TABLE campaigns ADD COLUMN post_url VARCHAR(500) NULL AFTER post_picture;
+-- ALTER TABLE campaigns MODIFY COLUMN objective ENUM('followers','messages','engagement','visits','sales','video_views') NOT NULL DEFAULT 'engagement';
+-- ALTER TABLE campaigns ADD COLUMN keywords TEXT NULL AFTER locations;
+-- ALTER TABLE campaigns ADD COLUMN duration_days INT UNSIGNED NOT NULL DEFAULT 1 AFTER budget;
+-- ALTER TABLE campaigns ADD COLUMN impressions INT UNSIGNED NOT NULL DEFAULT 0 AFTER duration_days;
+-- ALTER TABLE campaigns ADD COLUMN clicks INT UNSIGNED NOT NULL DEFAULT 0 AFTER impressions;
+-- ALTER TABLE campaigns ADD COLUMN spend DECIMAL(10,2) NOT NULL DEFAULT 0 AFTER clicks;
+-- ALTER TABLE campaigns ADD COLUMN results_note TEXT NULL AFTER spend;
+-- INSERT IGNORE INTO site_settings (`key`, value) VALUES
+--   ('support_whatsapp', ''), ('support_telegram', ''), ('support_form_url', ''),
+--   ('points_per_dollar', '1'), ('points_to_dollar', '100'),
+--   ('exchange_rate_usd_syp', '15000');

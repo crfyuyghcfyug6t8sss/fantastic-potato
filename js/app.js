@@ -267,11 +267,37 @@ async function doLogout() {
   goto('/login');
 }
 
-//  App boot 
+//  App boot
 function bootApp() {
   document.body.innerHTML = S.user.role === 'admin' ? tplAdminLayout() : tplUserLayout();
   navigate(S.user.role === 'admin' ? 'dashboard' : 'my-pages');
   loadPendingBadges();
+  mountSupportButton();
+}
+
+//  Floating Support Button (WhatsApp / Telegram / form)
+function mountSupportButton() {
+  const s = S.siteSettings || {};
+  const wa = (s.support_whatsapp || '').replace(/\D/g, '');
+  const tg = (s.support_telegram || '').replace(/^@/, '').trim();
+  const form = (s.support_form_url || '').trim();
+  if (!wa && !tg && !form) return;
+
+  document.getElementById('support-fab')?.remove();
+  const links = [];
+  if (wa)   links.push(`<a class="support-link wa" href="https://wa.me/${wa}" target="_blank" rel="noopener">${IC.whatsapp || '💬'} <span>واتساب الدعم</span></a>`);
+  if (tg)   links.push(`<a class="support-link tg" href="https://t.me/${esc(tg)}" target="_blank" rel="noopener">✈️ <span>تيليجرام</span></a>`);
+  if (form) links.push(`<a class="support-link fr" href="${esc(form)}" target="_blank" rel="noopener">${IC.messageCircle || '📝'} <span>تواصل معنا</span></a>`);
+
+  const fab = document.createElement('div');
+  fab.id = 'support-fab';
+  fab.className = 'support-fab';
+  fab.innerHTML = `
+    <div class="support-menu" id="support-menu">${links.join('')}</div>
+    <button class="support-btn" type="button" onclick="document.getElementById('support-menu').classList.toggle('open')" aria-label="الدعم">
+      ${IC.messageCircle || '💬'}
+    </button>`;
+  document.body.appendChild(fab);
 }
 
 //  Admin Layout 
@@ -308,8 +334,11 @@ function tplAdminLayout() {
         ${navItem('campaigns',   'rocket',  'الحملات الإعلانية', 'campaigns')}
         ${navItem('deposits',    'card',    'طلبات الشحن',        'deposits')}
         ${navItem('pay-methods', 'settings','طرق الدفع')}
+        ${navItem('coupons',     'dollar',  'الكوبونات')}
+        ${navItem('accounting',  'history', 'الحسابات')}
         <div class="nav-section">الإعدادات</div>
         ${navItem('site-settings', 'palette', 'إعدادات الموقع')}
+        ${navItem('support-links', 'chat',   'الدعم والإعدادات العامة')}
         <div class="nav-section">التواصل</div>
         ${navItem('whatsapp-send', 'chat', 'إرسال واتساب')}
       </nav>
@@ -425,7 +454,10 @@ const sections = {
   'campaigns':     renderAdminCampaigns,
   'deposits':      renderDeposits,
   'pay-methods':   renderPayMethods,
+  'coupons':       renderAdminCoupons,
+  'accounting':    renderAccounting,
   'site-settings': renderSiteSettings,
+  'support-links': renderSupportLinks,
   'whatsapp-send': renderWhatsappSend,
   // User
   'my-pages':         renderMyPages,
@@ -704,16 +736,21 @@ async function renderUsers() {
 
   if (!users.length) { el.innerHTML = emptyState('users', 'لا يوجد مستخدمون'); return; }
   el.innerHTML = `<table>
-    <thead><tr><th>#</th><th>الاسم</th><th>الهاتف</th><th>الدور</th><th>الرصيد</th><th>تاريخ التسجيل</th><th>إجراء</th></tr></thead>
+    <thead><tr><th>#</th><th>الاسم</th><th>الهاتف</th><th>الدور</th><th>الرصيد</th><th>النقاط</th><th>التاريخ</th><th>الإجراءات</th></tr></thead>
     <tbody>${users.map((u, i) => `<tr>
       <td>${i+1}</td>
       <td><strong>${esc(u.name)}</strong></td>
       <td dir="ltr">${esc(u.phone)}</td>
       <td>${u.role === 'admin' ? '<span class="badge badge-admin">مدير</span>' : '<span class="badge badge-cyan">مستخدم</span>'}</td>
       <td><strong style="color:var(--green)">$${Number(u.balance).toFixed(2)}</strong></td>
+      <td><strong style="color:var(--purple, #7c3aed)">${Number(u.points || 0).toLocaleString()}</strong></td>
       <td class="text-sm text-muted">${fmtDate(u.created_at)}</td>
-      <td>
-        ${u.role !== 'admin' ? `<button class="btn btn-ghost btn-sm" onclick="editBalance(${u.id},'${esc(u.name)}',${u.balance})">${IC.edit} تعديل الرصيد</button>` : ''}
+      <td style="display:flex;flex-wrap:wrap;gap:4px">
+        ${u.role !== 'admin' ? `
+          <button class="btn btn-ghost btn-xs" onclick="editBalance(${u.id},'${esc(u.name)}',${u.balance})">${IC.edit} رصيد</button>
+          <button class="btn btn-ghost btn-xs" onclick="adjustPoints(${u.id},'${esc(u.name)}')">+/− نقاط</button>
+          <button class="btn btn-ghost btn-xs" onclick="togglePageRestrict(${u.id})">${IC.lock || '🔒'} تقييد</button>
+        ` : ''}
       </td>
     </tr>`).join('')}</tbody>
   </table>`;
@@ -723,8 +760,24 @@ async function editBalance(userId, name, current) {
   const amount = prompt(`رصيد ${name} الحالي: $${current}\nأدخل الرصيد الجديد:`, current);
   if (amount === null || isNaN(parseFloat(amount))) return;
   const res = await API.post('admin/user-balance', { user_id: userId, amount: parseFloat(amount) });
-  if (res.success) { showToast('تم تحديث الرصيد'); renderUsers(); }
+  if (res.success) { showToast(res.message || 'تم تحديث الرصيد'); renderUsers(); }
   else showToast('' + res.message, 'error');
+}
+
+async function adjustPoints(userId, name) {
+  const v = prompt(`النقاط لـ ${name} (موجب لإضافة، سالب للخصم):`, '0');
+  const delta = parseInt(v || 0);
+  if (!delta) return;
+  const res = await API.post('admin/user-points', { user_id: userId, delta });
+  if (res.success) { showToast(res.message || 'تم'); renderUsers(); }
+  else showToast(res.message, 'error');
+}
+
+async function togglePageRestrict(userId) {
+  const restrict = confirm('تقييد صفحة هذا المستخدم؟ (إلغاء = رفع التقييد)');
+  const res = await API.post('admin/user-restrict', { user_id: userId, restricted: restrict ? 1 : 0 });
+  if (res.success) showToast(res.message || 'تم');
+  else showToast(res.message, 'error');
 }
 
 let assignState = { users: [], pages: [], selectedUser: null };
@@ -891,16 +944,17 @@ async function loadAdminCamps(status, tabEl) {
 function campaignCardAdmin(c) {
   const locs = (c.locations || []).map(l => l.name || l).join(' • ');
   return `
-  <div class="campaign-card mb-4">
+  <div class="campaign-card mb-4" id="adm-camp-${c.id}">
     <div class="campaign-header">
       ${c.post_picture ? `<img src="${esc(c.post_picture)}" class="campaign-thumb">` : `<div class="campaign-thumb flex items-center justify-center" style="font-size:22px"></div>`}
       <div style="flex:1">
         <div class="font-bold" style="font-size:15px">${esc(c.campaign_name)}</div>
         <div class="text-sm text-muted mt-1">${esc(c.user_name)} · ${esc(c.page_name)}</div>
-        <div class="campaign-meta">
+        <div class="campaign-meta" style="flex-wrap:wrap">
           ${statusBadge(c.status)}
           <span class="badge badge-blue">$${Number(c.budget).toFixed(2)}</span>
           <span class="badge badge-gray">${objLabel(c.objective)}</span>
+          ${c.duration_days ? `<span class="badge badge-gray">${c.duration_days} يوم</span>` : ''}
         </div>
       </div>
       <div class="text-sm text-muted">${fmtDate(c.created_at)}</div>
@@ -910,27 +964,84 @@ function campaignCardAdmin(c) {
         <div><span class="text-muted">الجنس: </span><strong>${genderLabel(c.gender)}</strong></div>
         <div><span class="text-muted">العمر: </span><strong>${c.age_min}–${c.age_max}</strong></div>
         <div style="grid-column:1/-1"><span class="text-muted">المناطق: </span><strong>${locs || 'لم تحدد'}</strong></div>
+        ${c.keywords ? `<div style="grid-column:1/-1"><span class="text-muted">كلمات: </span><strong>${esc(c.keywords)}</strong></div>` : ''}
+        ${c.post_url ? `<div style="grid-column:1/-1"><span class="text-muted">رابط المنشور: </span><a href="${esc(c.post_url)}" target="_blank" dir="ltr" style="color:var(--blue);word-break:break-all">${esc(c.post_url)}</a></div>` : ''}
         ${c.post_message ? `<div style="grid-column:1/-1"><span class="text-muted">المنشور: </span>${esc(c.post_message.slice(0,80))}${c.post_message.length>80?'...':''}</div>` : ''}
         ${c.admin_note ? `<div style="grid-column:1/-1"><span class="text-muted">ملاحظة: </span><em>${esc(c.admin_note)}</em></div>` : ''}
       </div>
-      ${c.status === 'pending' ? `
-      <div class="flex gap-2">
-        <button class="btn btn-success btn-sm" onclick="updateCamp(${c.id},'approved')">${IC.check} موافقة</button>
-        <button class="btn btn-danger btn-sm" onclick="updateCamp(${c.id},'rejected')">${IC.x} رفض</button>
-        <button class="btn btn-ghost btn-sm" onclick="updateCamp(${c.id},'running')">${IC.play} تشغيل</button>
-      </div>` : `
-      <div class="flex gap-2">
-        ${c.status !== 'completed' && c.status !== 'rejected' ? `<select class="form-control" style="width:auto;padding:6px 10px;font-size:12px" onchange="updateCamp(${c.id},this.value)">
-          <option value="">-- تغيير الحالة --</option>
-          <option value="approved">موافق عليه</option>
-          <option value="running">يعمل</option>
-          <option value="paused">متوقف</option>
-          <option value="completed">مكتمل</option>
-          <option value="rejected">مرفوض</option>
-        </select>` : ''}
-      </div>`}
+      ${(Number(c.impressions) + Number(c.clicks) + Number(c.spend)) > 0 ? `
+      <div class="grid-2" style="gap:6px;margin-bottom:10px">
+        ${statResult('المشاهدات', Number(c.impressions).toLocaleString())}
+        ${statResult('النقرات', Number(c.clicks).toLocaleString())}
+        ${statResult('CTR', (c.impressions > 0 ? ((c.clicks / c.impressions) * 100).toFixed(2) : '0.00') + '%')}
+        ${statResult('المصروف', '$' + Number(c.spend).toFixed(2))}
+      </div>` : ''}
+      <div class="flex gap-2" style="flex-wrap:wrap">
+        ${c.status === 'pending' ? `
+          <button class="btn btn-success btn-sm" onclick="updateCamp(${c.id},'approved')">${IC.check} موافقة</button>
+          <button class="btn btn-danger btn-sm" onclick="updateCamp(${c.id},'rejected')">${IC.x} رفض</button>
+          <button class="btn btn-ghost btn-sm" onclick="updateCamp(${c.id},'running')">${IC.play} تشغيل</button>
+        ` : ''}
+        ${c.status !== 'completed' && c.status !== 'rejected' && c.status !== 'pending' ? `
+          <select class="form-control" style="width:auto;padding:6px 10px;font-size:12px" onchange="updateCamp(${c.id},this.value)">
+            <option value="">-- تغيير الحالة --</option>
+            <option value="approved">موافق عليه</option>
+            <option value="running">يعمل</option>
+            <option value="paused">متوقف</option>
+            <option value="completed">مكتمل</option>
+            <option value="rejected">مرفوض</option>
+          </select>` : ''}
+        <button class="btn btn-ghost btn-sm" onclick="openResultsEditor(${c.id}, ${c.impressions||0}, ${c.clicks||0}, ${c.spend||0}, '${esc((c.results_note||'').replace(/'/g,'&#39;'))}')">${IC.edit} تحديث النتائج</button>
+      </div>
     </div>
   </div>`;
+}
+
+function openResultsEditor(id, impressions, clicks, spend, note) {
+  document.getElementById('res-edit-overlay')?.remove();
+  const overlay = document.createElement('div');
+  overlay.id = 'res-edit-overlay';
+  overlay.className = 'modal-overlay';
+  overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+  overlay.innerHTML = `
+    <div class="modal" onclick="event.stopPropagation()" style="max-width:480px">
+      <div class="modal-header">
+        <div class="modal-title">تحديث نتائج الحملة #${id}</div>
+        <button class="modal-close" onclick="document.getElementById('res-edit-overlay').remove()">×</button>
+      </div>
+      <div class="modal-body">
+        <div id="res-alert"></div>
+        <div class="grid-2" style="gap:10px">
+          <div class="form-group"><label class="form-label">المشاهدات</label><input class="form-control" id="res-imp" type="number" min="0" value="${impressions}"></div>
+          <div class="form-group"><label class="form-label">النقرات</label><input class="form-control" id="res-clk" type="number" min="0" value="${clicks}"></div>
+          <div class="form-group"><label class="form-label">المصروف ($)</label><input class="form-control" id="res-spend" type="number" min="0" step="0.01" value="${spend}"></div>
+        </div>
+        <div class="form-group"><label class="form-label">ملاحظة (اختياري)</label><textarea class="form-control" id="res-note" rows="3">${note || ''}</textarea></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost" onclick="document.getElementById('res-edit-overlay').remove()">إلغاء</button>
+        <button class="btn btn-primary" onclick="saveResults(${id})">${IC.save} حفظ</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+}
+
+async function saveResults(id) {
+  const data = {
+    id,
+    impressions:  parseInt(document.getElementById('res-imp')?.value || 0),
+    clicks:       parseInt(document.getElementById('res-clk')?.value || 0),
+    spend:        parseFloat(document.getElementById('res-spend')?.value || 0),
+    results_note: (document.getElementById('res-note')?.value || '').trim(),
+  };
+  const res = await API.post('admin/campaigns/results', data);
+  if (res.success) {
+    showToast(res.message || 'تم الحفظ');
+    document.getElementById('res-edit-overlay')?.remove();
+    loadAdminCamps('');
+  } else {
+    showToast(res.message, 'error');
+  }
 }
 
 async function updateCamp(id, status) {
@@ -1085,25 +1196,38 @@ async function deletePM(id) {
 
 async function renderMyPages() {
   setMain(`
-    <div class="page-header animate-fade-up">
-      <div class="page-title">صفحاتي</div>
-      <div class="page-sub">الصفحات المتاحة لك</div>
+    <div class="page-header animate-fade-up" style="display:flex;align-items:flex-start;gap:12px;flex-wrap:wrap">
+      <div style="flex:1;min-width:200px">
+        <div class="page-title">صفحاتي</div>
+        <div class="page-sub">الصفحات المتاحة لك</div>
+      </div>
+      <button class="btn btn-primary btn-sm" onclick="showLinkRequestForm()">${IC.plus} تقديم طلب صفحة</button>
     </div>
+    <div id="restricted-alert"></div>
+    <div id="link-form-wrap" style="display:none;max-width:480px;margin:0 auto 16px"></div>
     <div id="pages-grid"><div class="loading-center"><div class="spinner spinner-blue"></div></div></div>`);
 
   const res = await API.get('user/pages');
   const pages = res.pages || [];
   const el = q('#pages-grid');
 
+  if (res.restricted) {
+    qInner('#restricted-alert', `
+      <div class="alert alert-warning animate-fade-up" style="display:flex;align-items:center;gap:10px;margin-bottom:16px">
+        ${IC.warning || '⚠'}
+        <div style="flex:1">
+          <strong>صفحتك مقيدة حالياً.</strong> يرجى التواصل مع الدعم لمراجعة حالتك.
+        </div>
+      </div>`);
+  }
+
   if (!pages.length) {
     el.innerHTML = `
       <div class="empty-state">
-        <span class="empty-icon"></span>
+        <span class="empty-icon">${IC.pages || ''}</span>
         <h3>لا توجد صفحات مربوطة بحسابك</h3>
         <p>اربط صفحتك الآن لإنشاء أول إعلان لك</p>
-        <button class="btn btn-primary mt-4" onclick="showLinkRequestForm()" style="margin:0 auto">${IC.link} قم بربط صفحتك</button>
-      </div>
-      <div id="link-form-wrap" style="display:none;max-width:480px;margin:24px auto 0"></div>`;
+      </div>`;
     return;
   }
 
@@ -1301,23 +1425,7 @@ async function renderMyCampaignsByPlatform(platform) {
 
   if (!camps.length) { el.innerHTML = emptyState('rocket', `لا توجد حملات ${label}`, `اضغط "ترويج" على أي منشور ${label} لإنشاء حملة`); return; }
 
-  el.innerHTML = camps.map((c, i) => `
-  <div class="campaign-card mb-4 animate-fade-up" style="animation-delay:${i*.05}s">
-    <div class="campaign-header">
-      ${c.post_picture ? `<img src="${esc(c.post_picture)}" class="campaign-thumb">` : `<div class="campaign-thumb" style="background:var(--bg3);display:flex;align-items:center;justify-content:center;font-size:22px"></div>`}
-      <div style="flex:1">
-        <div class="font-bold" style="font-size:15px">${esc(c.campaign_name)}</div>
-        <div class="text-sm text-muted mt-1">${esc(c.page_name)}</div>
-        <div class="campaign-meta">
-          ${statusBadge(c.status)}
-          <span class="badge badge-blue">$${Number(c.budget).toFixed(2)}</span>
-          <span class="badge badge-gray">${objLabel(c.objective)}</span>
-        </div>
-      </div>
-      <div class="text-sm text-muted">${fmtDate(c.created_at)}</div>
-    </div>
-    ${c.admin_note ? `<div class="campaign-body"><div class="alert alert-info" style="margin:0">ملاحظة الأدمن: ${esc(c.admin_note)}</div></div>` : ''}
-  </div>`).join('');
+  el.innerHTML = camps.map((c, i) => userCampaignCard(c, i)).join('');
 }
 
 async function renderPosts() {
@@ -1443,8 +1551,9 @@ function postCard(p, i) {
   </div>`;
 }
 
-//  Promote Modal 
-let promoMap, promoMarkers = [], promoLocations = [], promoBudget = 50;
+//  Promote Modal
+let promoMap, promoMarkers = [], promoLocations = [], promoBudget = 5;
+let promoDuration = 5;
 let promoGender = 'all', promoObjective = 'engagement';
 
 function openPromoModal(jsonStr) {
@@ -1453,7 +1562,8 @@ function openPromoModal(jsonStr) {
   promoLocations = [];
   promoGender    = 'all';
   promoObjective = 'engagement';
-  promoBudget    = 50;
+  promoBudget    = 5;
+  promoDuration  = 5;
 
   document.body.insertAdjacentHTML('beforeend', `
   <div class="modal-overlay" id="promo-overlay" onclick="if(event.target===this)closePromo()">
@@ -1485,15 +1595,11 @@ function openPromoModal(jsonStr) {
             <div class="form-group">
               <label class="form-label">الهدف من الحملة</label>
               <div class="obj-pills">
-                <button class="obj-pill selected" data-obj="engagement" onclick="setObj('engagement',this)">
-                  <span class="obj-icon"></span>زيادة التفاعل
-                </button>
-                <button class="obj-pill" data-obj="followers" onclick="setObj('followers',this)">
-                  <span class="obj-icon"></span>متابعون
-                </button>
-                <button class="obj-pill" data-obj="messages" onclick="setObj('messages',this)">
-                  <span class="obj-icon"></span>رسائل
-                </button>
+                <button class="obj-pill selected" data-obj="engagement" onclick="setObj('engagement',this)">زيادة التفاعل</button>
+                <button class="obj-pill" data-obj="messages"    onclick="setObj('messages',this)">رسائل</button>
+                <button class="obj-pill" data-obj="visits"      onclick="setObj('visits',this)">زيارات الصفحة</button>
+                <button class="obj-pill" data-obj="sales"       onclick="setObj('sales',this)">مبيعات</button>
+                <button class="obj-pill" data-obj="video_views" onclick="setObj('video_views',this)">مشاهدات فيديو</button>
               </div>
             </div>
 
@@ -1520,15 +1626,28 @@ function openPromoModal(jsonStr) {
             </div>
 
             <div class="form-group">
-              <label class="form-label">الميزانية</label>
-              <div class="budget-display"><span>$</span><span id="budget-display">50</span></div>
+              <label class="form-label">الميزانية اليومية</label>
+              <div class="budget-display"><span>$</span><span id="budget-display">5</span><span class="text-sm text-muted">/ يوم</span></div>
               <div class="range-wrap">
-                <span class="text-sm text-muted">$10</span>
-                <input type="range" id="promo-budget" min="10" max="1000" step="10" value="50"
-                  oninput="promoBudget=parseInt(this.value);q('#budget-display').textContent=this.value">
-                <span class="text-sm text-muted">$1000</span>
+                <span class="text-sm text-muted">$2</span>
+                <input type="range" id="promo-budget" min="2" max="500" step="1" value="5"
+                  oninput="promoBudget=parseInt(this.value);q('#budget-display').textContent=this.value;updateBudgetPreview()">
+                <span class="text-sm text-muted">$500</span>
               </div>
             </div>
+
+            <div class="form-group">
+              <label class="form-label">مدة الحملة (أيام)</label>
+              <div class="budget-display"><span id="duration-display">5</span><span class="text-sm text-muted">يوم</span></div>
+              <div class="range-wrap">
+                <span class="text-sm text-muted">1</span>
+                <input type="range" id="promo-duration" min="1" max="30" step="1" value="5"
+                  oninput="promoDuration=parseInt(this.value);q('#duration-display').textContent=this.value;updateBudgetPreview()">
+                <span class="text-sm text-muted">30</span>
+              </div>
+            </div>
+
+            <div id="budget-preview" class="alert alert-info" style="margin:0;font-size:13px;line-height:1.7"></div>
           </div>
 
           <!-- RIGHT -->
@@ -1543,6 +1662,18 @@ function openPromoModal(jsonStr) {
               <div class="location-tags" id="loc-tags"></div>
             </div>
             <div id="promo-map"></div>
+
+            <div class="form-group" style="margin-top:14px">
+              <label class="form-label">كلمات مفتاحية (يدوياً)</label>
+              <textarea class="form-control" id="promo-keywords" rows="2"
+                placeholder="مثال: عقارات، سيارات، رياضة..."></textarea>
+              <div class="text-sm text-muted" style="margin-top:4px">افصل بين الكلمات بفاصلة.</div>
+            </div>
+
+            <div class="form-group">
+              <label class="form-label">رابط المنشور (اختياري)</label>
+              <input class="form-control" id="promo-post-url" type="url" dir="ltr" placeholder="https://facebook.com/...">
+            </div>
           </div>
         </div>
       </div>
@@ -1553,8 +1684,22 @@ function openPromoModal(jsonStr) {
     </div>
   </div>`);
 
-  // Load Leaflet map
-  setTimeout(() => initPromoMap(), 200);
+  // Load Leaflet map + initial preview
+  setTimeout(() => { initPromoMap(); updateBudgetPreview(); }, 200);
+}
+
+function updateBudgetPreview() {
+  const el = document.getElementById('budget-preview');
+  if (!el) return;
+  const total = (promoBudget * promoDuration);
+  let warn = '';
+  if (promoBudget < 2)  warn = '<div style="color:var(--red);font-weight:700">الحد الأدنى للميزانية اليومية 2 دولار.</div>';
+  else if (total < 7)   warn = '<div style="color:var(--red);font-weight:700">الحد الأدنى لإجمالي الميزانية 7 دولار.</div>';
+  el.innerHTML = `
+    سيتم تشغيل إعلانك لمدة <strong>${promoDuration}</strong> أيام مقابل
+    <strong style="color:var(--blue)">$${total.toFixed(2)}</strong>
+    (يومياً ${promoBudget}$).
+    ${warn}`;
 }
 
 function closePromo() {
@@ -1633,36 +1778,44 @@ function setObj(val, el) {
 }
 
 async function submitCampaign() {
-  const name    = (q('#promo-name')?.value || '').trim();
-  const ageMin  = parseInt(q('#age-min')?.value || 18);
-  const ageMax  = parseInt(q('#age-max')?.value || 65);
-  const btn     = q('#promo-submit-btn');
+  const name     = (q('#promo-name')?.value || '').trim();
+  const ageMin   = parseInt(q('#age-min')?.value || 18);
+  const ageMax   = parseInt(q('#age-max')?.value || 65);
+  const keywords = (q('#promo-keywords')?.value || '').trim();
+  const postUrl  = (q('#promo-post-url')?.value || '').trim();
+  const btn      = q('#promo-submit-btn');
   qInner('#promo-alert', '');
 
-  if (!name) return qInner('#promo-alert', alert_('الرجاء إدخال اسم الحملة', 'error'));
-  if (promoLocations.length === 0) return qInner('#promo-alert', alert_('الرجاء إضافة موقع واحد على الأقل', 'error'));
+  if (!name) { showToast('الرجاء إدخال اسم الحملة', 'error'); return qInner('#promo-alert', alert_('الرجاء إدخال اسم الحملة', 'error')); }
+  if (promoLocations.length === 0) { showToast('الرجاء إضافة موقع واحد على الأقل', 'error'); return qInner('#promo-alert', alert_('الرجاء إضافة موقع واحد على الأقل', 'error')); }
+  if (promoBudget < 2)               { showToast('الحد الأدنى للميزانية اليومية 2 دولار', 'error'); return; }
+  if (promoBudget * promoDuration < 7) { showToast('الحد الأدنى لإجمالي الميزانية 7 دولار', 'error'); return; }
 
   setBtn(btn, true, 'جاري الإرسال...');
 
   const res = await API.post('user/campaigns', {
-    page_id:       S.promotePost.pageId,
-    post_id:       S.promotePost.id,
-    post_message:  S.promotePost.message || '',
-    post_picture:  S.promotePost.picture || '',
-    campaign_name: name,
-    objective:     promoObjective,
-    gender:        promoGender,
-    age_min:       ageMin,
-    age_max:       ageMax,
-    locations:     promoLocations,
-    budget:        promoBudget,
+    page_id:        S.promotePost.pageId,
+    post_id:        S.promotePost.id,
+    post_message:   S.promotePost.message || '',
+    post_picture:   S.promotePost.picture || '',
+    post_url:       postUrl,
+    campaign_name:  name,
+    objective:      promoObjective,
+    gender:         promoGender,
+    age_min:        ageMin,
+    age_max:        ageMax,
+    locations:      promoLocations,
+    keywords:       keywords,
+    budget:         promoBudget,
+    duration_days:  promoDuration,
   });
 
   if (res.success) {
     closePromo();
-    showToast('تم إرسال الحملة للمراجعة!');
+    showToast(res.message || 'تم إرسال الحملة للمراجعة');
     navigate('my-campaigns');
   } else {
+    showToast(res.message, 'error');
     qInner('#promo-alert', alert_(res.message, 'error'));
     setBtn(btn, false, 'إرسال للمراجعة');
   }
@@ -1683,29 +1836,112 @@ async function renderMyCampaigns() {
 
   if (!camps.length) { el.innerHTML = emptyState('rocket', 'لا توجد حملات', 'اضغط "ترويج" على أي منشور لإنشاء حملة'); return; }
 
-  el.innerHTML = camps.map((c, i) => {
-    const isIg = (c.page_id || '').startsWith('ig_');
-    const platformBadge = isIg
-      ? `<span style="font-size:10px;padding:2px 7px;border-radius:10px;background:linear-gradient(135deg,#f09433,#dc2743);color:#fff;font-weight:700">📷 إنستاغرام</span>`
-      : `<span style="font-size:10px;padding:2px 7px;border-radius:10px;background:#1877F2;color:#fff;font-weight:700">f فيسبوك</span>`;
-    return `
-    <div class="campaign-card mb-4 animate-fade-up" style="animation-delay:${i*.05}s">
-      <div class="campaign-header">
-        ${c.post_picture ? `<img src="${esc(c.post_picture)}" class="campaign-thumb">` : `<div class="campaign-thumb" style="background:var(--bg3);display:flex;align-items:center;justify-content:center;font-size:22px"></div>`}
-        <div style="flex:1">
-          <div class="font-bold" style="font-size:15px">${esc(c.campaign_name)}</div>
-          <div class="text-sm text-muted mt-1" style="display:flex;align-items:center;gap:6px">${esc(c.page_name)} ${platformBadge}</div>
-          <div class="campaign-meta">
-            ${statusBadge(c.status)}
-            <span class="badge badge-blue">$${Number(c.budget).toFixed(2)}</span>
-            <span class="badge badge-gray">${objLabel(c.objective)}</span>
-          </div>
+  el.innerHTML = camps.map((c, i) => userCampaignCard(c, i)).join('');
+}
+
+function userCampaignCard(c, i) {
+  const isIg = (c.page_id || '').startsWith('ig_');
+  const platformBadge = isIg
+    ? `<span style="font-size:10px;padding:2px 7px;border-radius:10px;background:linear-gradient(135deg,#f09433,#dc2743);color:#fff;font-weight:700">📷 إنستاغرام</span>`
+    : `<span style="font-size:10px;padding:2px 7px;border-radius:10px;background:#1877F2;color:#fff;font-weight:700">f فيسبوك</span>`;
+  const noteColor = c.status === 'rejected' ? 'alert-error' : 'alert-info';
+  const noteLabel = c.status === 'rejected' ? 'سبب الرفض' : 'ملاحظة الأدمن';
+  return `
+  <div class="campaign-card mb-4 animate-fade-up" style="animation-delay:${i*.05}s;cursor:pointer" onclick="openCampaignDetails(${c.id})">
+    <div class="campaign-header">
+      ${c.post_picture ? `<img src="${esc(c.post_picture)}" class="campaign-thumb">` : `<div class="campaign-thumb" style="background:var(--bg3);display:flex;align-items:center;justify-content:center;font-size:22px"></div>`}
+      <div style="flex:1">
+        <div class="font-bold" style="font-size:15px">${esc(c.campaign_name)}</div>
+        <div class="text-sm text-muted mt-1" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">${esc(c.page_name)} ${platformBadge}</div>
+        <div class="campaign-meta" style="flex-wrap:wrap">
+          ${statusBadge(c.status)}
+          <span class="badge badge-blue">$${Number(c.budget).toFixed(2)}</span>
+          <span class="badge badge-gray">${objLabel(c.objective)}</span>
+          ${c.duration_days ? `<span class="badge badge-gray">${c.duration_days} يوم</span>` : ''}
         </div>
-        <div class="text-sm text-muted">${fmtDate(c.created_at)}</div>
       </div>
-      ${c.admin_note ? `<div class="campaign-body"><div class="alert alert-info" style="margin:0">ملاحظة الأدمن: ${esc(c.admin_note)}</div></div>` : ''}
+      <div class="text-sm text-muted">${fmtDate(c.created_at)}</div>
+    </div>
+    ${c.admin_note ? `<div class="campaign-body"><div class="alert ${noteColor}" style="margin:0"><strong>${noteLabel}:</strong> ${esc(c.admin_note)}</div></div>` : ''}
+  </div>`;
+}
+
+// ── Campaign details modal ──
+async function openCampaignDetails(id) {
+  document.getElementById('camp-detail-overlay')?.remove();
+  const overlay = document.createElement('div');
+  overlay.id = 'camp-detail-overlay';
+  overlay.className = 'modal-overlay';
+  overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+  overlay.innerHTML = `
+    <div class="modal" onclick="event.stopPropagation()" style="max-width:600px">
+      <div class="modal-header">
+        <div class="modal-title">تفاصيل الحملة</div>
+        <button class="modal-close" onclick="document.getElementById('camp-detail-overlay').remove()">×</button>
+      </div>
+      <div class="modal-body" id="camp-detail-body">
+        <div class="loading-center"><div class="spinner spinner-blue"></div></div>
+      </div>
     </div>`;
-  }).join('');
+  document.body.appendChild(overlay);
+
+  const res = await API.get('user/campaign-details?id=' + id);
+  const body = document.getElementById('camp-detail-body');
+  if (!res.success) { body.innerHTML = `<div class="alert alert-error">${esc(res.message)}</div>`; return; }
+  const c = res.campaign;
+  const ctr = c.impressions > 0 ? ((c.clicks / c.impressions) * 100).toFixed(2) : '0.00';
+  const locs = (c.locations || []).map(l => l.name || l).join(' • ') || 'لم تحدد';
+
+  body.innerHTML = `
+    <div class="flex gap-3 mb-4" style="background:var(--bg2);padding:12px;border-radius:10px;align-items:center">
+      ${c.post_picture ? `<img src="${esc(c.post_picture)}" style="width:60px;height:60px;border-radius:8px;object-fit:cover">` : ''}
+      <div style="flex:1">
+        <div class="font-bold">${esc(c.campaign_name)}</div>
+        <div class="text-sm text-muted">${esc(c.page_name)}</div>
+        <div class="campaign-meta" style="margin-top:6px">
+          ${statusBadge(c.status)}
+          <span class="badge badge-blue">$${Number(c.budget).toFixed(2)}</span>
+          <span class="badge badge-gray">${objLabel(c.objective)}</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="grid-2 text-sm" style="gap:8px;margin-bottom:14px">
+      <div><span class="text-muted">المدة: </span><strong>${c.duration_days || 1} يوم</strong></div>
+      <div><span class="text-muted">الجنس: </span><strong>${genderLabel(c.gender)}</strong></div>
+      <div><span class="text-muted">العمر: </span><strong>${c.age_min}–${c.age_max}</strong></div>
+      <div><span class="text-muted">الميزانية الإجمالية: </span><strong>$${Number(c.budget).toFixed(2)}</strong></div>
+      <div style="grid-column:1/-1"><span class="text-muted">المناطق: </span><strong>${esc(locs)}</strong></div>
+      ${c.keywords ? `<div style="grid-column:1/-1"><span class="text-muted">كلمات مفتاحية: </span><strong>${esc(c.keywords)}</strong></div>` : ''}
+      ${c.post_url ? `<div style="grid-column:1/-1"><span class="text-muted">رابط المنشور: </span><a href="${esc(c.post_url)}" target="_blank" dir="ltr">${esc(c.post_url)}</a></div>` : ''}
+    </div>
+
+    <h4 style="margin:14px 0 10px;font-size:14px">نتائج الإعلان</h4>
+    ${res.has_results ? `
+      <div class="grid-2" style="gap:10px">
+        ${statResult('المشاهدات', Number(c.impressions).toLocaleString())}
+        ${statResult('النقرات', Number(c.clicks).toLocaleString())}
+        ${statResult('CTR', ctr + '%')}
+        ${statResult('المصروف', '$' + Number(c.spend).toFixed(2))}
+      </div>
+      ${c.results_note ? `<div class="alert alert-info mt-3"><strong>ملاحظة:</strong> ${esc(c.results_note)}</div>` : ''}
+    ` : `
+      <div class="empty-state" style="padding:30px 16px">
+        <span class="empty-icon">${IC.clock || '⏳'}</span>
+        <h3 style="font-size:15px">قيد التجهيز</h3>
+        <p>سيتم تحديث نتائج الحملة قريباً.</p>
+      </div>
+    `}
+
+    ${c.admin_note ? `<div class="alert ${c.status === 'rejected' ? 'alert-error' : 'alert-info'} mt-3"><strong>${c.status === 'rejected' ? 'سبب الرفض' : 'ملاحظة الأدمن'}:</strong> ${esc(c.admin_note)}</div>` : ''}
+  `;
+}
+
+function statResult(label, value) {
+  return `<div style="background:var(--bg2);padding:12px;border-radius:10px;text-align:center">
+    <div class="text-muted text-sm">${label}</div>
+    <div style="font-size:20px;font-weight:900;color:var(--blue);margin-top:4px">${value}</div>
+  </div>`;
 }
 
 //  User: Wallet 
@@ -1720,14 +1956,34 @@ async function renderWallet() {
   const res = await API.get('user/wallet');
   if (!res.success) { q('#wallet-wrap').innerHTML = `<div class="alert alert-error">${esc(res.message)}</div>`; return; }
 
-  const { balance, methods, deposits } = res;
+  const { balance, methods, deposits, points = 0, exchange_rate = 0, points_to_dollar = 100 } = res;
+  window._walletExchangeRate = exchange_rate;
+  window._walletPointsRate   = points_to_dollar;
 
   q('#wallet-wrap').innerHTML = `
-  <!-- Balance hero -->
-  <div class="wallet-hero animate-fade-up">
-    <div class="wallet-label">رصيدك الحالي</div>
-    <div class="wallet-amount"><span class="wallet-currency">$</span>${Number(balance).toFixed(2)}</div>
-    <p style="color:rgba(255,255,255,.6);font-size:13px;margin-top:8px">يمكنك استخدام هذا الرصيد لإطلاق الحملات الإعلانية</p>
+  <!-- Balance + Points hero -->
+  <div class="grid-2 animate-fade-up" style="margin-bottom:18px">
+    <div class="wallet-hero">
+      <div class="wallet-label">رصيدك الحالي</div>
+      <div class="wallet-amount"><span class="wallet-currency">$</span>${Number(balance).toFixed(2)}</div>
+      ${exchange_rate > 0 ? `<div style="color:rgba(255,255,255,.7);font-size:13px;margin-top:6px">≈ <strong>${(balance * exchange_rate).toLocaleString('ar-SY')}</strong> ل.س (سعر: ${exchange_rate})</div>` : ''}
+      <p style="color:rgba(255,255,255,.6);font-size:13px;margin-top:8px">رصيد قابل للاستخدام في الحملات.</p>
+    </div>
+    <div class="wallet-hero" style="background:linear-gradient(135deg,#7c3aed,#3b82f6)">
+      <div class="wallet-label">نقاطك</div>
+      <div class="wallet-amount">${Number(points).toLocaleString()}</div>
+      <p style="color:rgba(255,255,255,.6);font-size:13px;margin-top:8px">كل ${points_to_dollar} نقطة = 1$ رصيد إعلاني.</p>
+      <button class="btn btn-light btn-sm mt-3" onclick="openConvertPoints(${points})" style="background:#fff;color:#7c3aed;font-weight:800">تحويل النقاط إلى رصيد</button>
+    </div>
+  </div>
+
+  <!-- Coupon redemption -->
+  <div class="card mb-4 animate-fade-up" style="animation-delay:.05s">
+    <div class="card-header"><div class="card-title">استبدال كوبون</div></div>
+    <div class="card-body" style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-start">
+      <input class="form-control" id="coupon-code" placeholder="أدخل كود الكوبون" style="flex:1;min-width:160px;text-transform:uppercase">
+      <button class="btn btn-primary" id="coupon-btn" onclick="redeemCoupon()">استبدال</button>
+    </div>
   </div>
 
   <!-- Deposit form -->
@@ -1746,8 +2002,13 @@ async function renderWallet() {
             </select>
           </div>
           <div class="form-group">
-            <label class="form-label">المبلغ (دولار)</label>
-            <input class="form-control" id="dep-amount" type="number" min="10" step="1" placeholder="أدخل المبلغ...">
+            <label class="form-label">المبلغ</label>
+            <div class="currency-toggle" style="display:flex;gap:6px;margin-bottom:8px">
+              <button type="button" class="curr-pill selected" id="curr-usd" onclick="setDepCurrency('USD')">USD ($)</button>
+              <button type="button" class="curr-pill" id="curr-syp" onclick="setDepCurrency('SYP')" ${!exchange_rate ? 'disabled style="opacity:.4"' : ''}>SYP (ل.س)</button>
+            </div>
+            <input class="form-control" id="dep-amount" type="number" min="10" step="1" placeholder="أدخل المبلغ..." oninput="updateDepConversion()">
+            <div class="text-sm text-muted" id="dep-conv" style="margin-top:6px"></div>
           </div>
           <div class="form-group">
             <label class="form-label">صورة إثبات التحويل</label>
@@ -1826,31 +2087,266 @@ function showPayDetails(methodId) {
 
 async function submitDeposit() {
   const methodId = q('#dep-method')?.value;
-  const amount   = parseFloat(q('#dep-amount')?.value || 0);
+  let amount     = parseFloat(q('#dep-amount')?.value || 0);
   const receipt  = q('#dep-receipt')?.files[0];
   const btn      = q('#dep-btn');
   qInner('#dep-alert', '');
 
-  if (!methodId) return qInner('#dep-alert', alert_('اختر طريقة دفع', 'error'));
-  if (!amount || amount < 10) return qInner('#dep-alert', alert_('الحد الأدنى للشحن $10', 'error'));
+  // If user entered SYP, convert back to USD before submitting
+  if (window._depCurrency === 'SYP' && window._walletExchangeRate > 0) {
+    amount = amount / window._walletExchangeRate;
+  }
+
+  if (!methodId)             { showToast('اختر طريقة دفع', 'error'); return qInner('#dep-alert', alert_('اختر طريقة دفع', 'error')); }
+  if (!amount || amount < 10){ showToast('الحد الأدنى للشحن $10', 'error'); return qInner('#dep-alert', alert_('الحد الأدنى للشحن $10', 'error')); }
 
   const fd = new FormData();
   fd.append('method_id', methodId);
-  fd.append('amount', amount);
+  fd.append('amount', amount.toFixed(2));
   if (receipt) fd.append('receipt', receipt);
 
   setBtn(btn, true, 'جاري الإرسال...');
   const res = await API.form('user/deposit', fd);
   if (res.success) {
-    showToast('تم إرسال طلب الشحن!');
+    showToast(res.message || 'تم إرسال طلب الشحن');
     renderWallet();
   } else {
+    showToast(res.message, 'error');
     qInner('#dep-alert', alert_(res.message, 'error'));
     setBtn(btn, false, 'إرسال الطلب');
   }
 }
 
-//  Admin: Site Settings 
+// ── Wallet helpers ────────────────────────────────────────────────────────────
+function setDepCurrency(c) {
+  window._depCurrency = c;
+  document.getElementById('curr-usd')?.classList.toggle('selected', c === 'USD');
+  document.getElementById('curr-syp')?.classList.toggle('selected', c === 'SYP');
+  updateDepConversion();
+}
+
+function updateDepConversion() {
+  const inp  = document.getElementById('dep-amount');
+  const conv = document.getElementById('dep-conv');
+  if (!inp || !conv) return;
+  const v = parseFloat(inp.value || 0);
+  const rate = window._walletExchangeRate || 0;
+  if (!v || !rate) { conv.textContent = ''; return; }
+  if (window._depCurrency === 'SYP') {
+    conv.textContent = `≈ $${(v / rate).toFixed(2)} دولار`;
+  } else {
+    conv.textContent = `≈ ${(v * rate).toLocaleString('ar-SY')} ل.س`;
+  }
+}
+
+async function redeemCoupon() {
+  const code = (document.getElementById('coupon-code')?.value || '').trim();
+  const btn  = document.getElementById('coupon-btn');
+  if (!code) { showToast('أدخل كود الكوبون', 'error'); return; }
+  setBtn(btn, true, 'جاري...');
+  const res = await API.post('user/redeem-coupon', { code });
+  setBtn(btn, false, 'استبدال');
+  if (res.success) {
+    showToast(res.message || 'تم استبدال الكوبون');
+    document.getElementById('coupon-code').value = '';
+    renderWallet();
+  } else {
+    showToast(res.message, 'error');
+  }
+}
+
+function openConvertPoints(currentPoints) {
+  const rate = window._walletPointsRate || 100;
+  const max  = Math.floor(currentPoints / rate) * rate;
+  if (max < rate) { showToast(`تحتاج على الأقل ${rate} نقطة`, 'warning'); return; }
+  const val = prompt(`عدد النقاط للتحويل (مضاعفات ${rate})\nلديك ${currentPoints} نقطة، الحد الأقصى ${max}`, max);
+  const n = parseInt(val || 0);
+  if (!n) return;
+  doConvertPoints(n);
+}
+
+async function doConvertPoints(points) {
+  const res = await API.post('user/convert-points', { points });
+  if (res.success) { showToast(res.message || 'تم التحويل'); renderWallet(); }
+  else showToast(res.message, 'error');
+}
+
+//  Admin: Coupons
+async function renderAdminCoupons() {
+  setMain(`
+    <div class="page-header animate-fade-up">
+      <div class="page-title">الكوبونات</div>
+      <div class="page-sub">إنشاء وإدارة كوبونات الخصم / الرصيد</div>
+    </div>
+    <div class="card animate-fade-up mb-4" style="max-width:640px">
+      <div class="card-header"><div class="card-title" id="coup-form-title">${IC.plus} كوبون جديد</div></div>
+      <div class="card-body">
+        <input type="hidden" id="coup-id">
+        <div id="coup-alert"></div>
+        <div class="grid-2" style="gap:10px">
+          <div class="form-group"><label class="form-label">الكود</label><input class="form-control" id="coup-code" placeholder="WELCOME10" style="text-transform:uppercase"></div>
+          <div class="form-group"><label class="form-label">النوع</label>
+            <select class="form-control" id="coup-type">
+              <option value="fixed">قيمة ثابتة ($)</option>
+              <option value="percent">نسبة (%)</option>
+            </select>
+          </div>
+          <div class="form-group"><label class="form-label">القيمة</label><input class="form-control" id="coup-value" type="number" min="0" step="0.01" placeholder="10"></div>
+          <div class="form-group"><label class="form-label">الحد الأقصى للاستخدامات (0 = غير محدود)</label><input class="form-control" id="coup-max" type="number" min="0" value="0"></div>
+        </div>
+        <label style="display:flex;align-items:center;gap:6px;margin-bottom:10px"><input type="checkbox" id="coup-active" checked> مفعّل</label>
+        <div class="flex gap-2">
+          <button class="btn btn-primary" onclick="saveCoupon()">${IC.save} حفظ</button>
+          <button class="btn btn-ghost" onclick="resetCouponForm()">إلغاء</button>
+        </div>
+      </div>
+    </div>
+    <div class="card animate-fade-up">
+      <div class="card-header"><div class="card-title">الكوبونات الحالية</div></div>
+      <div id="coup-list" class="table-wrap"><div class="loading-center"><div class="spinner spinner-blue"></div></div></div>
+    </div>`);
+  loadCoupons();
+}
+
+async function loadCoupons() {
+  const res = await API.get('admin/coupons');
+  const list = res.coupons || [];
+  const el = q('#coup-list');
+  if (!list.length) { el.innerHTML = emptyState('inbox', 'لا توجد كوبونات بعد'); return; }
+  el.innerHTML = `<table>
+    <thead><tr><th>الكود</th><th>النوع</th><th>القيمة</th><th>الاستخدامات</th><th>نشط</th><th>إجراء</th></tr></thead>
+    <tbody>${list.map(c => `<tr>
+      <td><code style="font-size:13px;font-weight:700">${esc(c.code)}</code></td>
+      <td>${c.type === 'percent' ? 'نسبة %' : 'ثابت $'}</td>
+      <td><strong>${c.type === 'percent' ? Number(c.value)+'%' : '$'+Number(c.value).toFixed(2)}</strong></td>
+      <td>${c.used_count} / ${c.max_uses > 0 ? c.max_uses : '∞'}</td>
+      <td>${c.is_active ? '<span class="badge badge-green">نعم</span>' : '<span class="badge badge-gray">لا</span>'}</td>
+      <td>
+        <button class="btn btn-ghost btn-xs" onclick='editCoupon(${JSON.stringify(c).replace(/"/g,"&quot;")})'>${IC.edit}</button>
+        <button class="btn btn-danger btn-xs" onclick="deleteCoupon(${c.id})">${IC.trash}</button>
+      </td>
+    </tr>`).join('')}</tbody>
+  </table>`;
+}
+
+function editCoupon(c) {
+  q('#coup-id').value    = c.id;
+  q('#coup-code').value  = c.code;
+  q('#coup-type').value  = c.type;
+  q('#coup-value').value = c.value;
+  q('#coup-max').value   = c.max_uses;
+  q('#coup-active').checked = !!c.is_active;
+  q('#coup-form-title').innerHTML = `${IC.edit} تعديل كوبون`;
+}
+
+function resetCouponForm() {
+  q('#coup-id').value = '';
+  ['coup-code','coup-value'].forEach(id => q('#'+id).value = '');
+  q('#coup-max').value = 0;
+  q('#coup-active').checked = true;
+  q('#coup-form-title').innerHTML = `${IC.plus} كوبون جديد`;
+}
+
+async function saveCoupon() {
+  const data = {
+    id:        q('#coup-id').value || undefined,
+    code:      (q('#coup-code').value || '').trim(),
+    type:      q('#coup-type').value,
+    value:     parseFloat(q('#coup-value').value || 0),
+    max_uses:  parseInt(q('#coup-max').value || 0),
+    is_active: q('#coup-active').checked ? 1 : 0,
+  };
+  const res = await API.post('admin/coupons', data);
+  if (res.success) { showToast(res.message || 'تم الحفظ'); resetCouponForm(); loadCoupons(); }
+  else { showToast(res.message, 'error'); qInner('#coup-alert', alert_(res.message, 'error')); }
+}
+
+async function deleteCoupon(id) {
+  if (!confirm('حذف هذا الكوبون؟')) return;
+  const res = await API.post('admin/coupons/delete', { id });
+  if (res.success) { showToast(res.message || 'تم الحذف'); loadCoupons(); }
+  else showToast(res.message, 'error');
+}
+
+//  Admin: Accounting
+async function renderAccounting() {
+  setMain(`
+    <div class="page-header animate-fade-up">
+      <div class="page-title">الحسابات</div>
+      <div class="page-sub">نظرة مالية عامة على النظام</div>
+    </div>
+    <div id="acc-wrap"><div class="loading-center"><div class="spinner spinner-blue"></div></div></div>`);
+
+  const res = await API.get('admin/accounting');
+  if (!res.success) { q('#acc-wrap').innerHTML = `<div class="alert alert-error">${esc(res.message)}</div>`; return; }
+  const a = res.accounting;
+
+  q('#acc-wrap').innerHTML = `
+    <div class="stats-grid animate-fade-up">
+      ${statCard('wallet',  '$' + Number(a.total_balances).toFixed(2),  'أرصدة المستخدمين',  'blue')}
+      ${statCard('dollar',  '$' + Number(a.total_deposits).toFixed(2),  'إجمالي الإيداعات',   'green')}
+      ${statCard('rocket',  '$' + Number(a.total_campaigns).toFixed(2), 'إجمالي ميزانيات الحملات', 'purple')}
+      ${statCard('dollar',  '$' + Number(a.total_spend).toFixed(2),     'إجمالي المصروف',     'amber')}
+      ${statCard('dollar',  '$' + Number(a.total_coupon_grant).toFixed(2), 'إجمالي مكافآت الكوبونات', 'indigo')}
+      ${statCard('history', Number(a.total_points).toLocaleString(),    'إجمالي النقاط',       'purple')}
+      ${statCard('dollar',  '$' + Number(a.profit).toFixed(2),          'الربح (إيداع − مصروف)', a.profit >= 0 ? 'green' : 'red')}
+    </div>`;
+}
+
+//  Admin: Support links & general settings
+async function renderSupportLinks() {
+  setMain(`
+    <div class="page-header animate-fade-up">
+      <div class="page-title">الدعم والإعدادات العامة</div>
+      <div class="page-sub">زر الدعم العائم، النقاط وسعر الصرف</div>
+    </div>
+    <div class="card animate-fade-up" style="max-width:640px">
+      <div class="card-body">
+        <div id="sl-alert"></div>
+        <div class="grid-2" style="gap:10px">
+          <div class="form-group"><label class="form-label">واتساب الدعم</label><input class="form-control" id="sl-wa" dir="ltr" placeholder="+9639xxxxxxxx"></div>
+          <div class="form-group"><label class="form-label">تيليجرام (username)</label><input class="form-control" id="sl-tg" dir="ltr" placeholder="supportchannel"></div>
+          <div class="form-group" style="grid-column:1/-1"><label class="form-label">رابط نموذج تواصل خارجي</label><input class="form-control" id="sl-form" dir="ltr" placeholder="https://..."></div>
+          <div class="form-group"><label class="form-label">نقاط لكل 1$ إنفاق</label><input class="form-control" id="sl-ppd" type="number" min="0" value="1"></div>
+          <div class="form-group"><label class="form-label">نقاط = 1$ رصيد</label><input class="form-control" id="sl-ptd" type="number" min="1" value="100"></div>
+          <div class="form-group" style="grid-column:1/-1"><label class="form-label">سعر صرف الدولار مقابل الليرة السورية</label><input class="form-control" id="sl-rate" type="number" min="0" value="0"></div>
+        </div>
+        <button class="btn btn-primary" onclick="saveSupportLinks()">${IC.save} حفظ</button>
+      </div>
+    </div>`);
+
+  const res = await API.get('admin/site-settings');
+  if (res.success) {
+    const s = res.settings || {};
+    q('#sl-wa').value   = s.support_whatsapp || '';
+    q('#sl-tg').value   = s.support_telegram || '';
+    q('#sl-form').value = s.support_form_url || '';
+    q('#sl-ppd').value  = s.points_per_dollar || 1;
+    q('#sl-ptd').value  = s.points_to_dollar || 100;
+    q('#sl-rate').value = s.exchange_rate_usd_syp || 0;
+  }
+}
+
+async function saveSupportLinks() {
+  const data = {
+    support_whatsapp:      (q('#sl-wa').value || '').trim(),
+    support_telegram:      (q('#sl-tg').value || '').trim(),
+    support_form_url:      (q('#sl-form').value || '').trim(),
+    points_per_dollar:     q('#sl-ppd').value || '1',
+    points_to_dollar:      q('#sl-ptd').value || '100',
+    exchange_rate_usd_syp: q('#sl-rate').value || '0',
+  };
+  const res = await API.post('admin/support-links', data);
+  if (res.success) {
+    Object.assign(S.siteSettings, data);
+    mountSupportButton();
+    showToast(res.message || 'تم الحفظ');
+  } else {
+    showToast(res.message, 'error');
+  }
+}
+
+//  Admin: Site Settings
 async function renderSiteSettings() {
   setMain(`
     <div class="page-header animate-fade-up">
@@ -2050,7 +2546,14 @@ function statusBadge(status) {
 }
 
 function objLabel(obj) {
-  return { engagement: 'تفاعل', followers: 'متابعون', messages: 'رسائل' }[obj] || obj;
+  return {
+    engagement:  'تفاعل',
+    followers:   'متابعون',
+    messages:    'رسائل',
+    visits:      'زيارات الصفحة',
+    sales:       'مبيعات',
+    video_views: 'مشاهدات فيديو',
+  }[obj] || obj;
 }
 
 function genderLabel(g) {
@@ -2062,13 +2565,29 @@ function emptyState(iconKey, title, sub = '') {
   return `<div class="empty-state"><span class="empty-icon">${svgIcon}</span><h3>${title}</h3>${sub ? `<p>${sub}</p>` : ''}</div>`;
 }
 
-//  Toast 
+//  Toast (RTL, immediate, type-aware)
 function showToast(msg, type = 'success') {
-  const toast = document.createElement('div');
-  toast.style.cssText = `position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:${type==='error'?'var(--red)':'var(--green)'};color:white;padding:12px 22px;border-radius:10px;font-size:14px;font-weight:700;z-index:9999;box-shadow:0 8px 24px rgba(0,0,0,.3);animation:fadeUp .3s ease`;
-  toast.textContent = msg;
-  document.body.appendChild(toast);
-  setTimeout(() => toast.remove(), 3000);
+  // Stack at top-center so the user sees it without scrolling
+  let stack = document.getElementById('toast-stack');
+  if (!stack) {
+    stack = document.createElement('div');
+    stack.id = 'toast-stack';
+    stack.className = 'toast-stack';
+    document.body.appendChild(stack);
+  }
+  const colors = {
+    success: 'var(--green)',
+    error:   'var(--red)',
+    warning: 'var(--amber, #f59e0b)',
+    info:    'var(--blue)',
+  };
+  const icons = { success: '✓', error: '✕', warning: '!', info: 'i' };
+  const t = document.createElement('div');
+  t.className = 'toast toast-' + type;
+  t.style.background = colors[type] || colors.success;
+  t.innerHTML = `<span class="toast-icon">${icons[type] || '✓'}</span><span>${esc(msg)}</span>`;
+  stack.appendChild(t);
+  setTimeout(() => { t.classList.add('toast-out'); setTimeout(() => t.remove(), 300); }, 3500);
 }
 
 // ─── User: Payment History ────────────────────────────────────────────────────

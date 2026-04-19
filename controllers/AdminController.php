@@ -246,13 +246,13 @@ class AdminController {
         $note   = $data['note']   ?? '';
 
         $allowed = ['approved','rejected','running','paused','completed'];
-        if (!$id || !in_array($status, $allowed)) jsonError('Invalid request');
+        if (!$id || !in_array($status, $allowed)) jsonError('طلب غير صالح');
 
         $db  = getDB();
         $cam = $db->prepare('SELECT * FROM campaigns WHERE id=? LIMIT 1');
         $cam->execute([$id]);
         $c = $cam->fetch();
-        if (!$c) jsonError('Campaign not found');
+        if (!$c) jsonError('الحملة غير موجودة');
 
         // Refund if rejected
         if ($status === 'rejected' && $c['status'] === 'pending') {
@@ -260,7 +260,25 @@ class AdminController {
         }
 
         $db->prepare('UPDATE campaigns SET status=?,admin_note=? WHERE id=?')->execute([$status, $note, $id]);
-        jsonSuccess([], 'Campaign updated');
+        jsonSuccess([], 'تم تحديث الحملة');
+    }
+
+    // Admin: enter manual ad statistics for a campaign
+    public function updateCampaignResults(): void {
+        requireAdmin();
+        $data = json_decode(file_get_contents('php://input'), true) ?? [];
+        $id   = (int)($data['id'] ?? 0);
+        if (!$id) jsonError('معرّف الحملة مطلوب');
+
+        $impressions = max(0, (int)($data['impressions'] ?? 0));
+        $clicks      = max(0, (int)($data['clicks']      ?? 0));
+        $spend       = max(0, (float)($data['spend']     ?? 0));
+        $note        = trim((string)($data['results_note'] ?? ''));
+
+        getDB()->prepare(
+            'UPDATE campaigns SET impressions=?, clicks=?, spend=?, results_note=? WHERE id=?'
+        )->execute([$impressions, $clicks, $spend, $note ?: null, $id]);
+        jsonSuccess([], 'تم تحديث نتائج الحملة');
     }
 
     // ─── Stats ────────────────────────────────────────────────────────────────
@@ -283,9 +301,111 @@ class AdminController {
         $data   = json_decode(file_get_contents('php://input'), true) ?? [];
         $userId = (int)($data['user_id'] ?? 0);
         $amount = (float)($data['amount'] ?? 0);
-        if (!$userId) jsonError('user_id required');
+        if (!$userId) jsonError('معرّف المستخدم مطلوب');
         getDB()->prepare('UPDATE users SET balance=? WHERE id=?')->execute([$amount, $userId]);
-        jsonSuccess([], 'Balance updated');
+        jsonSuccess([], 'تم تحديث الرصيد');
+    }
+
+    // Admin: toggle page-restricted flag for a user
+    public function setPageRestricted(): void {
+        requireAdmin();
+        $data       = json_decode(file_get_contents('php://input'), true) ?? [];
+        $userId     = (int)($data['user_id'] ?? 0);
+        $restricted = !empty($data['restricted']) ? 1 : 0;
+        if (!$userId) jsonError('معرّف المستخدم مطلوب');
+        getDB()->prepare('UPDATE users SET page_restricted=? WHERE id=?')->execute([$restricted, $userId]);
+        jsonSuccess(['restricted' => $restricted], $restricted ? 'تم تقييد الصفحة' : 'تم رفع التقييد');
+    }
+
+    // Admin: add/subtract points for a user
+    public function adjustPoints(): void {
+        requireAdmin();
+        $data    = json_decode(file_get_contents('php://input'), true) ?? [];
+        $userId  = (int)($data['user_id'] ?? 0);
+        $delta   = (int)($data['delta']   ?? 0);
+        if (!$userId || $delta === 0) jsonError('بيانات غير صالحة');
+
+        $db = getDB();
+        if ($delta > 0) {
+            $db->prepare('UPDATE users SET points = points + ? WHERE id=?')->execute([$delta, $userId]);
+        } else {
+            $db->prepare('UPDATE users SET points = GREATEST(0, points + ?) WHERE id=?')->execute([$delta, $userId]);
+        }
+        jsonSuccess([], 'تم تحديث النقاط');
+    }
+
+    // Admin: simple accounting overview
+    public function accounting(): void {
+        requireAdmin();
+        $db = getDB();
+        $a = [];
+        $a['total_balances']    = (float)$db->query("SELECT COALESCE(SUM(balance),0) FROM users WHERE role='user'")->fetchColumn();
+        $a['total_points']      = (int)  $db->query("SELECT COALESCE(SUM(points),0)  FROM users WHERE role='user'")->fetchColumn();
+        $a['total_deposits']    = (float)$db->query("SELECT COALESCE(SUM(amount),0)  FROM deposits WHERE status='approved'")->fetchColumn();
+        $a['total_campaigns']   = (float)$db->query("SELECT COALESCE(SUM(budget),0)  FROM campaigns WHERE status IN ('approved','running','completed')")->fetchColumn();
+        $a['total_spend']       = (float)$db->query("SELECT COALESCE(SUM(spend),0)   FROM campaigns")->fetchColumn();
+        $a['total_coupon_grant']= (float)$db->query("SELECT COALESCE(SUM(amount),0)  FROM coupon_redemptions")->fetchColumn();
+        $a['profit']            = $a['total_deposits'] - $a['total_spend'];
+        jsonSuccess(['accounting' => $a]);
+    }
+
+    // ─── Coupons ──────────────────────────────────────────────────────────────
+
+    public function listCoupons(): void {
+        requireAdmin();
+        $rows = getDB()->query('SELECT * FROM coupons ORDER BY id DESC')->fetchAll();
+        jsonSuccess(['coupons' => $rows]);
+    }
+
+    public function saveCoupon(): void {
+        requireAdmin();
+        $data     = json_decode(file_get_contents('php://input'), true) ?? [];
+        $code     = strtoupper(trim($data['code'] ?? ''));
+        $type     = $data['type'] ?? 'fixed';
+        $value    = (float)($data['value'] ?? 0);
+        $maxUses  = max(0, (int)($data['max_uses'] ?? 0));
+        $isActive = !empty($data['is_active']) ? 1 : 0;
+
+        if (!$code) jsonError('كود الكوبون مطلوب');
+        if (!in_array($type, ['percent','fixed'], true)) jsonError('نوع الكوبون غير صالح');
+        if ($value <= 0) jsonError('قيمة الكوبون يجب أن تكون أكبر من صفر');
+        if ($type === 'percent' && $value > 100) jsonError('النسبة يجب ألا تتجاوز 100');
+
+        $db = getDB();
+        if (!empty($data['id'])) {
+            $db->prepare('UPDATE coupons SET code=?, type=?, value=?, max_uses=?, is_active=? WHERE id=?')
+               ->execute([$code, $type, $value, $maxUses, $isActive, (int)$data['id']]);
+        } else {
+            $db->prepare('INSERT INTO coupons (code,type,value,max_uses,is_active) VALUES (?,?,?,?,?)')
+               ->execute([$code, $type, $value, $maxUses, $isActive]);
+        }
+        jsonSuccess([], 'تم حفظ الكوبون');
+    }
+
+    public function deleteCoupon(): void {
+        requireAdmin();
+        $data = json_decode(file_get_contents('php://input'), true) ?? [];
+        $id   = (int)($data['id'] ?? 0);
+        if (!$id) jsonError('معرّف الكوبون مطلوب');
+        getDB()->prepare('DELETE FROM coupons WHERE id=?')->execute([$id]);
+        jsonSuccess([], 'تم حذف الكوبون');
+    }
+
+    // Admin: save support links (whatsapp/telegram/form url)
+    public function saveSupportLinks(): void {
+        requireAdmin();
+        $data = json_decode(file_get_contents('php://input'), true) ?? [];
+        $keys = ['support_whatsapp', 'support_telegram', 'support_form_url',
+                 'points_per_dollar', 'points_to_dollar', 'exchange_rate_usd_syp'];
+        $db = getDB();
+        $stmt = $db->prepare('INSERT INTO site_settings (`key`, value) VALUES (?,?) ON DUPLICATE KEY UPDATE value=?');
+        foreach ($keys as $k) {
+            if (array_key_exists($k, $data)) {
+                $val = trim((string)$data[$k]);
+                $stmt->execute([$k, $val, $val]);
+            }
+        }
+        jsonSuccess([], 'تم حفظ الإعدادات');
     }
 
     // ─── Site Settings ────────────────────────────────────────────────────────
