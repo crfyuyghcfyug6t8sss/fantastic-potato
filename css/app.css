@@ -1437,6 +1437,44 @@ tr:hover td { background: rgba(255,255,255,.02); }
 }
 
 /* ══════════════════════════════════════════════════════════════════════════ */
+/* ─── PROMOTED POST BANNER (admin campaign card) ─────────────────────────── */
+/* ══════════════════════════════════════════════════════════════════════════ */
+.promoted-post-banner {
+  display: flex;
+  align-items: stretch;
+  gap: 12px;
+  padding: 10px;
+  margin: 0 0 12px;
+  background: linear-gradient(135deg, rgba(59,130,246,.08), rgba(99,102,241,.08));
+  border: 1px solid rgba(59,130,246,.25);
+  border-radius: 12px;
+  text-decoration: none;
+  color: inherit;
+  transition: all .2s;
+}
+.promoted-post-banner:hover {
+  border-color: var(--blue);
+  background: linear-gradient(135deg, rgba(59,130,246,.14), rgba(99,102,241,.14));
+  transform: translateY(-1px);
+}
+.promoted-post-banner img,
+.promoted-post-banner-ph {
+  width: 72px; height: 72px; flex-shrink: 0;
+  border-radius: 8px; object-fit: cover;
+  background: var(--bg3);
+}
+.promoted-post-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.promoted-post-title { font-size: 13px; font-weight: 800; color: var(--blue); display: inline-flex; align-items: center; gap: 6px; }
+.promoted-post-msg   { font-size: 13px; color: var(--text); line-height: 1.5; }
+.promoted-post-url   { font-size: 11px; color: var(--muted); word-break: break-all; font-family: monospace; }
+
+@media (max-width: 480px) {
+  .promoted-post-banner img, .promoted-post-banner-ph { width: 56px; height: 56px; }
+  .promoted-post-msg { font-size: 12px; }
+  .promoted-post-url { font-size: 10px; }
+}
+
+/* ══════════════════════════════════════════════════════════════════════════ */
 /* ─── TOAST STACK (top-center, RTL) ──────────────────────────────────────── */
 /* ══════════════════════════════════════════════════════════════════════════ */
 .toast-stack {

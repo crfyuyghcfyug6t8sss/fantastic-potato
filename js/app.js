@@ -961,13 +961,20 @@ function campaignCardAdmin(c) {
       <div class="text-sm text-muted">${fmtDate(c.created_at)}</div>
     </div>
     <div class="campaign-body">
+      ${c.post_url ? `
+      <a href="${esc(c.post_url)}" target="_blank" rel="noopener" class="promoted-post-banner">
+        ${c.post_picture ? `<img src="${esc(c.post_picture)}" alt="">` : '<div class="promoted-post-banner-ph"></div>'}
+        <div class="promoted-post-text">
+          <div class="promoted-post-title">${IC.externalLink} عرض المنشور المُروَّج</div>
+          <div class="promoted-post-msg">${esc((c.post_message || 'منشور بدون نص').slice(0,120))}${(c.post_message||'').length>120?'…':''}</div>
+          <div class="promoted-post-url" dir="ltr">${esc(c.post_url)}</div>
+        </div>
+      </a>` : ''}
       <div class="grid-2 text-sm" style="gap:8px;margin-bottom:12px">
         <div><span class="text-muted">الجنس: </span><strong>${genderLabel(c.gender)}</strong></div>
         <div><span class="text-muted">العمر: </span><strong>${c.age_min}–${c.age_max}</strong></div>
         <div style="grid-column:1/-1"><span class="text-muted">المناطق: </span><strong>${locs || 'لم تحدد'}</strong></div>
-        ${c.keywords ? `<div style="grid-column:1/-1"><span class="text-muted">كلمات: </span><strong>${esc(c.keywords)}</strong></div>` : ''}
-        ${c.post_url ? `<div style="grid-column:1/-1"><span class="text-muted">رابط المنشور: </span><a href="${esc(c.post_url)}" target="_blank" dir="ltr" style="color:var(--blue);word-break:break-all">${esc(c.post_url)}</a></div>` : ''}
-        ${c.post_message ? `<div style="grid-column:1/-1"><span class="text-muted">المنشور: </span>${esc(c.post_message.slice(0,80))}${c.post_message.length>80?'...':''}</div>` : ''}
+        ${c.keywords ? `<div style="grid-column:1/-1"><span class="text-muted">الاهتمامات: </span><strong>${esc(c.keywords)}</strong></div>` : ''}
         ${c.admin_note ? `<div style="grid-column:1/-1"><span class="text-muted">ملاحظة: </span><em>${esc(c.admin_note)}</em></div>` : ''}
       </div>
       ${(Number(c.impressions) + Number(c.clicks) + Number(c.spend)) > 0 ? `
@@ -1543,7 +1550,7 @@ function postCard(p, i) {
       </div>
       <div class="post-actions">
         <button class="btn btn-primary btn-sm" style="flex:1;display:inline-flex;align-items:center;justify-content:center;gap:6px"
-          data-post='${esc(JSON.stringify({id:p.id,message:p.message,picture:p.full_picture,pageId:S.fbPage.id,pageName:S.fbPage.name}))}'
+          data-post='${esc(JSON.stringify({id:p.id,message:p.message,picture:p.full_picture,permalink:p.permalink_url||'',pageId:S.fbPage.id,pageName:S.fbPage.name}))}'
           onclick="openPromoModal(this.dataset.post)">
           ${IC.rocket} ترويج المنشور
         </button>
@@ -1674,11 +1681,6 @@ function openPromoModal(jsonStr) {
               <textarea class="form-control" id="promo-keywords" rows="2"
                 placeholder="مثال: عقارات، سيارات، رياضة..."></textarea>
               <div class="text-sm text-muted" style="margin-top:4px">افصل بين الاهتمامات بفاصلة.</div>
-            </div>
-
-            <div class="form-group">
-              <label class="form-label">رابط المنشور (اختياري)</label>
-              <input class="form-control" id="promo-post-url" type="url" dir="ltr" placeholder="https://facebook.com/...">
             </div>
           </div>
         </div>
@@ -1815,7 +1817,7 @@ async function submitCampaign() {
   const ageMin   = parseInt(q('#age-min')?.value || 18);
   const ageMax   = parseInt(q('#age-max')?.value || 65);
   const keywords = (q('#promo-keywords')?.value || '').trim();
-  const postUrl  = (q('#promo-post-url')?.value || '').trim();
+  const postUrl  = (S.promotePost?.permalink || '').trim();
   const btn      = q('#promo-submit-btn');
   qInner('#promo-alert', '');
 

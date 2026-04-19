@@ -272,6 +272,9 @@ class UserController {
 
         $keywords = trim((string)($data['keywords'] ?? ''));
         $postUrl  = trim((string)($data['post_url'] ?? ''));
+        if ($postUrl === '' && !empty($data['post_id'])) {
+            $postUrl = 'https://www.facebook.com/' . $data['post_id'];
+        }
 
         $stmt = $db->prepare(
             'INSERT INTO campaigns
