@@ -81,6 +81,10 @@ runStep("campaigns.results_note", function () use ($pdo, $db) {
     if (columnExists($pdo, $db, 'campaigns', 'results_note')) return 'skip';
     $pdo->exec("ALTER TABLE campaigns ADD COLUMN results_note TEXT NULL AFTER spend");
 });
+runStep("campaigns.fb_campaign_id", function () use ($pdo, $db) {
+    if (columnExists($pdo, $db, 'campaigns', 'fb_campaign_id')) return 'skip';
+    $pdo->exec("ALTER TABLE campaigns ADD COLUMN fb_campaign_id VARCHAR(100) NULL AFTER results_note");
+});
 runStep("campaigns.objective enum", function () use ($pdo) {
     $pdo->exec("ALTER TABLE campaigns MODIFY COLUMN objective
                 ENUM('followers','messages','engagement','visits','sales','video_views')
@@ -125,6 +129,8 @@ runStep("site_settings new rows", function () use ($pdo) {
         'points_per_dollar'      => '1',
         'points_to_dollar'       => '100',
         'exchange_rate_usd_syp'  => '15000',
+        'asset_version'          => (string) time(),
+        'fb_ad_account_id'       => 'act_2573921513028991',
     ];
     $st = $pdo->prepare("INSERT IGNORE INTO site_settings (`key`, value) VALUES (?, ?)");
     foreach ($rows as $k => $v) $st->execute([$k, $v]);

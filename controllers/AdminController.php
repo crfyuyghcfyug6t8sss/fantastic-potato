@@ -274,10 +274,11 @@ class AdminController {
         $clicks      = max(0, (int)($data['clicks']      ?? 0));
         $spend       = max(0, (float)($data['spend']     ?? 0));
         $note        = trim((string)($data['results_note'] ?? ''));
+        $fbCamp      = trim((string)($data['fb_campaign_id'] ?? ''));
 
         getDB()->prepare(
-            'UPDATE campaigns SET impressions=?, clicks=?, spend=?, results_note=? WHERE id=?'
-        )->execute([$impressions, $clicks, $spend, $note ?: null, $id]);
+            'UPDATE campaigns SET impressions=?, clicks=?, spend=?, results_note=?, fb_campaign_id=? WHERE id=?'
+        )->execute([$impressions, $clicks, $spend, $note ?: null, $fbCamp ?: null, $id]);
         jsonSuccess([], 'تم تحديث نتائج الحملة');
     }
 
@@ -479,6 +480,116 @@ class AdminController {
         requireAdmin();
         $count = getDB()->query("SELECT COUNT(*) FROM page_link_requests WHERE status='pending'")->fetchColumn();
         jsonSuccess(['count' => (int)$count]);
+    }
+
+    // ─── Cache-busting ────────────────────────────────────────────────────────
+    public function bustCache(): void {
+        requireAdmin();
+        $v = (string) time();
+        getDB()->prepare(
+            "INSERT INTO site_settings (`key`,value) VALUES ('asset_version',?)
+             ON DUPLICATE KEY UPDATE value=VALUES(value)"
+        )->execute([$v]);
+        jsonSuccess(['asset_version' => $v], 'تم مسح الكاش لكل المستخدمين');
+    }
+
+    // ─── Facebook Insights (auto-fetch campaign results) ──────────────────────
+    public function fetchInsights(): void {
+        requireAdmin();
+        $data = json_decode(file_get_contents('php://input'), true) ?? [];
+
+        $localId    = (int) ($data['id'] ?? 0);
+        $fbCampaign = trim((string) ($data['fb_campaign_id'] ?? ''));
+        $platform   = (string) ($data['platform'] ?? 'all'); // facebook | instagram | all
+        $persist    = !empty($data['persist']);
+
+        if ($fbCampaign === '') jsonError('معرّف الحملة على فيسبوك (campaign_id) مطلوب');
+        if (!in_array($platform, ['facebook','instagram','all'], true)) $platform = 'all';
+
+        $token = $this->getAdminToken('facebook');
+        if (!$token) jsonError('لم يتم ضبط Access Token الخاص بالأدمن', 400);
+
+        $params = [
+            'fields'     => 'impressions,clicks,spend,cpc,ctr',
+            'breakdowns' => 'publisher_platform',
+            'level'      => 'campaign',
+        ];
+        if ($platform !== 'all') {
+            $params['filtering'] = json_encode([[
+                'field'    => 'publisher_platform',
+                'operator' => 'IN',
+                'value'    => [$platform],
+            ]]);
+        }
+
+        $resp = fbGet('/' . $fbCampaign . '/insights', $token, $params);
+
+        if (isset($resp['error'])) {
+            $err = $resp['error'];
+            $msg = $err['message'] ?? 'خطأ من فيسبوك';
+            $code = $err['code'] ?? 0;
+            $sub  = $err['error_subcode'] ?? 0;
+            if ($code === 190 || $sub === 463 || $sub === 467) {
+                jsonError('التوكن منتهي أو غير صالح — يرجى تحديث Access Token', 401);
+            }
+            if ($code === 100) {
+                jsonError('معرّف الحملة (campaign_id) غير صحيح', 404);
+            }
+            if ($code === 200 || $code === 10) {
+                jsonError('صلاحيات غير كافية — يلزم توكن بصلاحية ads_read', 403);
+            }
+            jsonError('فيسبوك: ' . $msg, 500);
+        }
+
+        $rows = $resp['data'] ?? [];
+        $byPlatform = [];
+        $totals = ['impressions' => 0, 'clicks' => 0, 'spend' => 0.0];
+
+        foreach ($rows as $r) {
+            $plat = $r['publisher_platform'] ?? 'unknown';
+            $imp  = (int)   ($r['impressions'] ?? 0);
+            $clk  = (int)   ($r['clicks']      ?? 0);
+            $spd  = (float) ($r['spend']       ?? 0);
+            $cpc  = (float) ($r['cpc']         ?? 0);
+            $ctr  = (float) ($r['ctr']         ?? 0);
+
+            $byPlatform[] = [
+                'platform'    => $plat,
+                'impressions' => $imp,
+                'clicks'      => $clk,
+                'spend'       => $spd,
+                'cpc'         => $cpc,
+                'ctr'         => $ctr,
+            ];
+            $totals['impressions'] += $imp;
+            $totals['clicks']      += $clk;
+            $totals['spend']       += $spd;
+        }
+
+        $totals['ctr'] = $totals['impressions'] > 0
+            ? round(($totals['clicks'] / $totals['impressions']) * 100, 2)
+            : 0.0;
+        $totals['cpc'] = $totals['clicks'] > 0
+            ? round($totals['spend'] / $totals['clicks'], 2)
+            : 0.0;
+
+        if ($persist && $localId > 0) {
+            getDB()->prepare(
+                'UPDATE campaigns SET impressions=?, clicks=?, spend=?, fb_campaign_id=? WHERE id=?'
+            )->execute([
+                $totals['impressions'],
+                $totals['clicks'],
+                $totals['spend'],
+                $fbCampaign,
+                $localId,
+            ]);
+        }
+
+        jsonSuccess([
+            'totals'      => $totals,
+            'by_platform' => $byPlatform,
+            'platform'    => $platform,
+        ], 'تم جلب النتائج من فيسبوك');
     }
 
     // ─── Private ──────────────────────────────────────────────────────────────

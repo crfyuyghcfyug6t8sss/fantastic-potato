@@ -64,6 +64,8 @@ if (str_starts_with($uri, '/api/')) {
         'GET:admin/campaigns'            => ['AdminController', 'listCampaigns'],
         'POST:admin/campaigns/update'    => ['AdminController', 'updateCampaign'],
         'POST:admin/campaigns/results'   => ['AdminController', 'updateCampaignResults'],
+        'POST:admin/campaigns/insights'  => ['AdminController', 'fetchInsights'],
+        'POST:admin/bust-cache'          => ['AdminController', 'bustCache'],
 
         'GET:admin/coupons'              => ['AdminController', 'listCoupons'],
         'POST:admin/coupons'             => ['AdminController', 'saveCoupon'],

@@ -486,9 +486,14 @@ function navigate(id) {
 
 async function renderDashboard() {
   setMain(`
-    <div class="page-header animate-fade-up">
-      <div class="page-title">مرحباً ${esc(S.user.name)}</div>
-      <div class="page-sub">نظرة عامة على النظام</div>
+    <div class="page-header animate-fade-up" style="display:flex;flex-wrap:wrap;align-items:flex-start;justify-content:space-between;gap:12px">
+      <div>
+        <div class="page-title">مرحباً ${esc(S.user.name)}</div>
+        <div class="page-sub">نظرة عامة على النظام</div>
+      </div>
+      <button class="btn btn-ghost btn-sm" onclick="bustUserCache()" title="إجبار المستخدمين على تحميل أحدث إصدار">
+        ${IC.history} مسح الكاش للمستخدمين
+      </button>
     </div>
     <div class="stats-grid" id="stats-grid">
       ${[1,2,3,4,5,6].map(i => `<div class="stat-card"><div class="skeleton" style="height:70px;border-radius:8px"></div></div>`).join('')}
@@ -999,26 +1004,49 @@ function campaignCardAdmin(c) {
             <option value="completed">مكتمل</option>
             <option value="rejected">مرفوض</option>
           </select>` : ''}
-        <button class="btn btn-ghost btn-sm" onclick="openResultsEditor(${c.id}, ${c.impressions||0}, ${c.clicks||0}, ${c.spend||0}, '${esc((c.results_note||'').replace(/'/g,'&#39;'))}')">${IC.edit} تحديث النتائج</button>
+        <button class="btn btn-ghost btn-sm" onclick="openResultsEditor(${c.id}, ${c.impressions||0}, ${c.clicks||0}, ${c.spend||0}, '${esc((c.results_note||'').replace(/'/g,'&#39;'))}', '${esc(c.fb_campaign_id || '')}')">${IC.edit} تحديث النتائج</button>
       </div>
     </div>
   </div>`;
 }
 
-function openResultsEditor(id, impressions, clicks, spend, note) {
+function openResultsEditor(id, impressions, clicks, spend, note, fbCampaignId) {
   document.getElementById('res-edit-overlay')?.remove();
   const overlay = document.createElement('div');
   overlay.id = 'res-edit-overlay';
   overlay.className = 'modal-overlay';
   overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
   overlay.innerHTML = `
-    <div class="modal" onclick="event.stopPropagation()" style="max-width:480px">
+    <div class="modal" onclick="event.stopPropagation()" style="max-width:520px">
       <div class="modal-header">
         <div class="modal-title">تحديث نتائج الحملة #${id}</div>
         <button class="modal-close" onclick="document.getElementById('res-edit-overlay').remove()">×</button>
       </div>
       <div class="modal-body">
         <div id="res-alert"></div>
+
+        <div class="card" style="padding:14px;margin-bottom:14px;background:linear-gradient(135deg,rgba(59,130,246,.08),rgba(99,102,241,.08));border-color:rgba(59,130,246,.3)">
+          <div style="font-weight:800;font-size:13px;color:var(--blue);margin-bottom:8px;display:flex;align-items:center;gap:6px">
+            ${IC.rocket} جلب النتائج تلقائياً من فيسبوك
+          </div>
+          <div class="form-group">
+            <label class="form-label">معرّف الحملة على فيسبوك (campaign_id)</label>
+            <input class="form-control" id="res-fbid" dir="ltr" placeholder="123456789012345" value="${esc(fbCampaignId || '')}">
+          </div>
+          <div class="form-group">
+            <label class="form-label">المنصة</label>
+            <div class="obj-pills" style="grid-template-columns:1fr 1fr 1fr">
+              <button type="button" class="obj-pill selected" data-plat="all"       onclick="setInsightsPlatform('all',this)">الكل</button>
+              <button type="button" class="obj-pill"          data-plat="facebook"  onclick="setInsightsPlatform('facebook',this)">Facebook</button>
+              <button type="button" class="obj-pill"          data-plat="instagram" onclick="setInsightsPlatform('instagram',this)">Instagram</button>
+            </div>
+          </div>
+          <button class="btn btn-primary w-full" id="fetch-insights-btn" onclick="fetchInsights(${id})">
+            ${IC.history} جلب النتائج من Facebook Graph API
+          </button>
+          <div id="insights-breakdown" style="margin-top:10px"></div>
+        </div>
+
         <div class="grid-2" style="gap:10px">
           <div class="form-group"><label class="form-label">المشاهدات</label><input class="form-control" id="res-imp" type="number" min="0" value="${impressions}"></div>
           <div class="form-group"><label class="form-label">النقرات</label><input class="form-control" id="res-clk" type="number" min="0" value="${clicks}"></div>
@@ -1032,15 +1060,63 @@ function openResultsEditor(id, impressions, clicks, spend, note) {
       </div>
     </div>`;
   document.body.appendChild(overlay);
+  window._insightsPlatform = 'all';
+}
+
+function setInsightsPlatform(v, el) {
+  window._insightsPlatform = v;
+  document.querySelectorAll('#res-edit-overlay .obj-pill').forEach(p => p.classList.remove('selected'));
+  el.classList.add('selected');
+}
+
+async function fetchInsights(id) {
+  const fbId = (document.getElementById('res-fbid')?.value || '').trim();
+  if (!fbId) { showToast('أدخل معرّف الحملة على فيسبوك', 'error'); return; }
+  const btn = document.getElementById('fetch-insights-btn');
+  setBtn(btn, true, 'جاري الجلب...');
+  const res = await API.post('admin/campaigns/insights', {
+    id,
+    fb_campaign_id: fbId,
+    platform: window._insightsPlatform || 'all',
+    persist:  false,
+  });
+  setBtn(btn, false, `${IC.history} جلب النتائج من Facebook Graph API`);
+  if (!res.success) { showToast(res.message || 'فشل الجلب', 'error'); return; }
+
+  const t = res.totals || {};
+  const imp = q('#res-imp'), clk = q('#res-clk'), spd = q('#res-spend');
+  if (imp) imp.value = t.impressions || 0;
+  if (clk) clk.value = t.clicks      || 0;
+  if (spd) spd.value = (t.spend || 0).toFixed ? (+t.spend).toFixed(2) : t.spend || 0;
+
+  const rows = (res.by_platform || []).map(p => `
+    <tr>
+      <td>${esc(p.platform)}</td>
+      <td>${Number(p.impressions).toLocaleString()}</td>
+      <td>${Number(p.clicks).toLocaleString()}</td>
+      <td>$${Number(p.spend).toFixed(2)}</td>
+      <td>${Number(p.ctr).toFixed(2)}%</td>
+      <td>$${Number(p.cpc).toFixed(2)}</td>
+    </tr>`).join('');
+  q('#insights-breakdown').innerHTML = `
+    <div class="table-wrap" style="border:1px solid var(--border);border-radius:8px">
+      <table style="font-size:12px">
+        <thead><tr><th>المنصة</th><th>المشاهدات</th><th>النقرات</th><th>المصروف</th><th>CTR</th><th>CPC</th></tr></thead>
+        <tbody>${rows || '<tr><td colspan="6" style="text-align:center;color:var(--muted)">لا توجد بيانات</td></tr>'}</tbody>
+      </table>
+    </div>
+    <div class="text-sm text-muted" style="margin-top:6px">الإجماليات: ${Number(t.impressions||0).toLocaleString()} مشاهدة · ${Number(t.clicks||0).toLocaleString()} نقرة · $${Number(t.spend||0).toFixed(2)} · CTR ${Number(t.ctr||0).toFixed(2)}% · CPC $${Number(t.cpc||0).toFixed(2)}</div>`;
+  showToast('تم جلب النتائج');
 }
 
 async function saveResults(id) {
   const data = {
     id,
-    impressions:  parseInt(document.getElementById('res-imp')?.value || 0),
-    clicks:       parseInt(document.getElementById('res-clk')?.value || 0),
-    spend:        parseFloat(document.getElementById('res-spend')?.value || 0),
-    results_note: (document.getElementById('res-note')?.value || '').trim(),
+    impressions:    parseInt(document.getElementById('res-imp')?.value || 0),
+    clicks:         parseInt(document.getElementById('res-clk')?.value || 0),
+    spend:          parseFloat(document.getElementById('res-spend')?.value || 0),
+    results_note:   (document.getElementById('res-note')?.value || '').trim(),
+    fb_campaign_id: (document.getElementById('res-fbid')?.value || '').trim(),
   };
   const res = await API.post('admin/campaigns/results', data);
   if (res.success) {
@@ -1049,6 +1125,16 @@ async function saveResults(id) {
     loadAdminCamps('');
   } else {
     showToast(res.message, 'error');
+  }
+}
+
+async function bustUserCache() {
+  if (!confirm('سيتم إجبار جميع المستخدمين على تحميل أحدث إصدار من الموقع. متابعة؟')) return;
+  const res = await API.post('admin/bust-cache', {});
+  if (res.success) {
+    showToast(res.message || 'تم مسح الكاش لكل المستخدمين');
+  } else {
+    showToast(res.message || 'فشل مسح الكاش', 'error');
   }
 }
 
