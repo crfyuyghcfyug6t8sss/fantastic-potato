@@ -1,0 +1,492 @@
+<?php
+class AdminController {
+
+    public function saveToken(): void {
+        requireAdmin();
+        $data     = json_decode(file_get_contents('php://input'), true) ?? [];
+        $token    = trim($data['token'] ?? '');
+        $platform = $data['platform'] ?? 'facebook';
+        if (!in_array($platform, ['facebook', 'instagram'])) $platform = 'facebook';
+        if (!$token) jsonError('Token is required');
+
+        $verify = fbGet('/me', $token, ['fields' => 'id,name']);
+        if (isset($verify['error'])) jsonError('Invalid token: ' . ($verify['error']['message'] ?? ''));
+
+        $encrypted = encryptToken($token);
+        $db = getDB();
+        $db->prepare(
+            'INSERT INTO admin_tokens (platform, access_token) VALUES (?,?)
+             ON DUPLICATE KEY UPDATE access_token=VALUES(access_token)'
+        )->execute([$platform, $encrypted]);
+
+        jsonSuccess(['fb_user' => $verify['name'] ?? '', 'platform' => $platform], 'Token saved successfully');
+    }
+
+    public function getTokenStatus(): void {
+        requireAdmin();
+        $db = getDB();
+        $rows = $db->query("SELECT platform, updated_at FROM admin_tokens")->fetchAll();
+        $status = ['facebook' => null, 'instagram' => null];
+        foreach ($rows as $r) $status[$r['platform']] = $r['updated_at'];
+        jsonSuccess(['tokens' => $status]);
+    }
+
+    public function fetchPages(): void {
+        requireAdmin();
+        $platform = $_GET['platform'] ?? 'all';
+        $db = getDB();
+        $saved = 0;
+
+        // ─── Fetch Facebook pages ───────────────────────────────────────────
+        if ($platform === 'all' || $platform === 'facebook') {
+            $fbToken = $this->getAdminToken('facebook');
+            if ($fbToken) {
+                $result = fbGet('/me/accounts', $fbToken, ['fields' => 'id,name,access_token', 'limit' => 100]);
+                if (!isset($result['error'])) {
+                    $stmt = $db->prepare(
+                        'INSERT INTO pages (page_id,page_name,access_token,platform) VALUES (?,?,?,?)
+                         ON DUPLICATE KEY UPDATE page_name=VALUES(page_name), access_token=VALUES(access_token), platform=VALUES(platform)'
+                    );
+                    foreach ($result['data'] ?? [] as $p) {
+                        if (empty($p['id']) || empty($p['access_token'])) continue;
+                        $stmt->execute([$p['id'], $p['name'], encryptToken($p['access_token']), 'facebook']);
+                        $saved++;
+                    }
+                }
+            }
+        }
+
+        // ─── Fetch Instagram Business accounts ─────────────────────────────
+        if ($platform === 'all' || $platform === 'instagram') {
+            $igToken = $this->getAdminToken('instagram');
+            if ($igToken) {
+                // Get FB pages with Instagram accounts linked
+                $result = fbGet('/me/accounts', $igToken, [
+                    'fields' => 'id,name,access_token,instagram_business_account{id,name,username,profile_picture_url}',
+                    'limit'  => 100
+                ]);
+                if (!isset($result['error'])) {
+                    $stmt = $db->prepare(
+                        'INSERT INTO pages (page_id,page_name,access_token,platform,instagram_id) VALUES (?,?,?,?,?)
+                         ON DUPLICATE KEY UPDATE page_name=VALUES(page_name), access_token=VALUES(access_token), platform=VALUES(platform), instagram_id=VALUES(instagram_id)'
+                    );
+                    foreach ($result['data'] ?? [] as $p) {
+                        if (empty($p['instagram_business_account'])) continue;
+                        $ig = $p['instagram_business_account'];
+                        $igPageId = 'ig_' . $ig['id'];
+                        $igName   = $ig['username'] ?? ($ig['name'] ?? $p['name']);
+                        $stmt->execute([$igPageId, $igName, encryptToken($p['access_token']), 'instagram', $ig['id']]);
+                        $saved++;
+                    }
+                }
+            }
+        }
+
+        jsonSuccess([
+            'count' => $saved,
+            'pages' => $this->getPagesList(),
+        ], "$saved page(s) fetched");
+    }
+
+    public function listPages(): void {
+        requireAdmin();
+        $platform = $_GET['platform'] ?? '';
+        jsonSuccess(['pages' => $this->getPagesList($platform)]);
+    }
+
+    public function listUsers(): void {
+        requireAdmin();
+        $db    = getDB();
+        $users = $db->query("SELECT id,name,phone,role,balance,created_at FROM users ORDER BY id DESC")->fetchAll();
+        jsonSuccess(['users' => $users]);
+    }
+
+    public function assignPage(): void {
+        requireAdmin();
+        $data   = json_decode(file_get_contents('php://input'), true) ?? [];
+        $userId = (int)($data['user_id'] ?? 0);
+        $pageId = (int)($data['page_id'] ?? 0);
+        if (!$userId || !$pageId) jsonError('user_id and page_id required');
+
+        $db  = getDB();
+        $usr = $db->prepare('SELECT role FROM users WHERE id = ?');
+        $usr->execute([$userId]);
+        $u = $usr->fetch();
+        if (!$u) jsonError('User not found');
+        if ($u['role'] === 'admin') jsonError('Cannot assign to admin');
+
+        $db->prepare('INSERT IGNORE INTO user_pages (user_id,page_id) VALUES (?,?)')->execute([$userId, $pageId]);
+        jsonSuccess([], 'Assigned');
+    }
+
+    public function revokePage(): void {
+        requireAdmin();
+        $data   = json_decode(file_get_contents('php://input'), true) ?? [];
+        $userId = (int)($data['user_id'] ?? 0);
+        $pageId = (int)($data['page_id'] ?? 0);
+        if (!$userId || !$pageId) jsonError('user_id and page_id required');
+        getDB()->prepare('DELETE FROM user_pages WHERE user_id=? AND page_id=?')->execute([$userId, $pageId]);
+        jsonSuccess([], 'Revoked');
+    }
+
+    public function userPages(): void {
+        requireAdmin();
+        $userId = (int)($_GET['user_id'] ?? 0);
+        if (!$userId) jsonError('user_id required');
+        $db   = getDB();
+        $stmt = $db->prepare(
+            'SELECT p.id,p.page_id,p.page_name,p.platform FROM pages p
+             JOIN user_pages up ON up.page_id=p.id WHERE up.user_id=?'
+        );
+        $stmt->execute([$userId]);
+        jsonSuccess(['pages' => $stmt->fetchAll()]);
+    }
+
+    // ─── Payment Methods ──────────────────────────────────────────────────────
+
+    public function listPaymentMethods(): void {
+        requireAdmin();
+        $methods = getDB()->query('SELECT * FROM payment_methods ORDER BY id DESC')->fetchAll();
+        jsonSuccess(['methods' => $methods]);
+    }
+
+    public function savePaymentMethod(): void {
+        requireAdmin();
+        $data = json_decode(file_get_contents('php://input'), true) ?? [];
+        $name = trim($data['name'] ?? '');
+        $addr = trim($data['address'] ?? '');
+        if (!$name || !$addr) jsonError('Name and address required');
+
+        $db = getDB();
+        if (!empty($data['id'])) {
+            $db->prepare('UPDATE payment_methods SET name=?,description=?,address=?,is_active=? WHERE id=?')
+               ->execute([$name, $data['description'] ?? '', $addr, (int)($data['is_active'] ?? 1), (int)$data['id']]);
+        } else {
+            $db->prepare('INSERT INTO payment_methods (name,description,address) VALUES (?,?,?)')
+               ->execute([$name, $data['description'] ?? '', $addr]);
+        }
+        jsonSuccess([], 'Saved');
+    }
+
+    public function deletePaymentMethod(): void {
+        requireAdmin();
+        $data = json_decode(file_get_contents('php://input'), true) ?? [];
+        $id   = (int)($data['id'] ?? 0);
+        if (!$id) jsonError('id required');
+        getDB()->prepare('DELETE FROM payment_methods WHERE id=?')->execute([$id]);
+        jsonSuccess([], 'Deleted');
+    }
+
+    // ─── Deposits ─────────────────────────────────────────────────────────────
+
+    public function listDeposits(): void {
+        requireAdmin();
+        $status = $_GET['status'] ?? '';
+        $db     = getDB();
+        $sql    = 'SELECT d.*,u.name as user_name,u.phone,pm.name as method_name
+                   FROM deposits d JOIN users u ON u.id=d.user_id
+                   JOIN payment_methods pm ON pm.id=d.payment_method_id';
+        if ($status) {
+            $stmt = $db->prepare($sql . ' WHERE d.status=? ORDER BY d.created_at DESC');
+            $stmt->execute([$status]);
+        } else {
+            $stmt = $db->query($sql . ' ORDER BY d.created_at DESC');
+        }
+        jsonSuccess(['deposits' => $stmt->fetchAll()]);
+    }
+
+    public function updateDeposit(): void {
+        requireAdmin();
+        $data   = json_decode(file_get_contents('php://input'), true) ?? [];
+        $id     = (int)($data['id']     ?? 0);
+        $status = $data['status'] ?? '';
+        $note   = $data['note']   ?? '';
+
+        if (!$id || !in_array($status, ['approved','rejected'])) jsonError('Invalid request');
+
+        $db   = getDB();
+        $dep  = $db->prepare('SELECT * FROM deposits WHERE id=? LIMIT 1');
+        $dep->execute([$id]);
+        $d = $dep->fetch();
+        if (!$d) jsonError('Deposit not found');
+        if ($d['status'] !== 'pending') jsonError('Already processed');
+
+        $db->prepare('UPDATE deposits SET status=?,admin_note=? WHERE id=?')->execute([$status, $note, $id]);
+
+        if ($status === 'approved') {
+            $db->prepare('UPDATE users SET balance=balance+? WHERE id=?')->execute([$d['amount'], $d['user_id']]);
+        }
+
+        jsonSuccess([], 'Updated');
+    }
+
+    // ─── Campaigns ────────────────────────────────────────────────────────────
+
+    public function listCampaigns(): void {
+        requireAdmin();
+        $status = $_GET['status'] ?? '';
+        $db     = getDB();
+        $sql    = 'SELECT c.*,u.name as user_name,u.phone FROM campaigns c JOIN users u ON u.id=c.user_id';
+        if ($status) {
+            $stmt = $db->prepare($sql . ' WHERE c.status=? ORDER BY c.created_at DESC');
+            $stmt->execute([$status]);
+        } else {
+            $stmt = $db->query($sql . ' ORDER BY c.created_at DESC');
+        }
+        $camps = $stmt->fetchAll();
+        foreach ($camps as &$c) $c['locations'] = json_decode($c['locations'], true);
+        jsonSuccess(['campaigns' => $camps]);
+    }
+
+    public function updateCampaign(): void {
+        requireAdmin();
+        $data   = json_decode(file_get_contents('php://input'), true) ?? [];
+        $id     = (int)($data['id']     ?? 0);
+        $status = $data['status'] ?? '';
+        $note   = $data['note']   ?? '';
+
+        $allowed = ['approved','rejected','running','paused','completed'];
+        if (!$id || !in_array($status, $allowed)) jsonError('Invalid request');
+
+        $db  = getDB();
+        $cam = $db->prepare('SELECT * FROM campaigns WHERE id=? LIMIT 1');
+        $cam->execute([$id]);
+        $c = $cam->fetch();
+        if (!$c) jsonError('Campaign not found');
+
+        // Refund if rejected
+        if ($status === 'rejected' && $c['status'] === 'pending') {
+            $db->prepare('UPDATE users SET balance=balance+? WHERE id=?')->execute([$c['budget'], $c['user_id']]);
+        }
+
+        $db->prepare('UPDATE campaigns SET status=?,admin_note=? WHERE id=?')->execute([$status, $note, $id]);
+        jsonSuccess([], 'Campaign updated');
+    }
+
+    // ─── Stats ────────────────────────────────────────────────────────────────
+
+    public function stats(): void {
+        requireAdmin();
+        $db = getDB();
+        $s  = [];
+        $s['users']            = $db->query("SELECT COUNT(*) FROM users WHERE role='user'")->fetchColumn();
+        $s['pages']            = $db->query("SELECT COUNT(*) FROM pages")->fetchColumn();
+        $s['campaigns_total']  = $db->query("SELECT COUNT(*) FROM campaigns")->fetchColumn();
+        $s['campaigns_pending']= $db->query("SELECT COUNT(*) FROM campaigns WHERE status='pending'")->fetchColumn();
+        $s['deposits_pending'] = $db->query("SELECT COUNT(*) FROM deposits WHERE status='pending'")->fetchColumn();
+        $s['total_revenue']    = $db->query("SELECT COALESCE(SUM(amount),0) FROM deposits WHERE status='approved'")->fetchColumn();
+        jsonSuccess(['stats' => $s]);
+    }
+
+    public function updateUserBalance(): void {
+        requireAdmin();
+        $data   = json_decode(file_get_contents('php://input'), true) ?? [];
+        $userId = (int)($data['user_id'] ?? 0);
+        $amount = (float)($data['amount'] ?? 0);
+        if (!$userId) jsonError('user_id required');
+        getDB()->prepare('UPDATE users SET balance=? WHERE id=?')->execute([$amount, $userId]);
+        jsonSuccess([], 'Balance updated');
+    }
+
+    // ─── Site Settings ────────────────────────────────────────────────────────
+
+    public function getSiteSettings(): void {
+        requireAdmin();
+        $db   = getDB();
+        $rows = $db->query('SELECT `key`, value FROM site_settings')->fetchAll();
+        $settings = [];
+        foreach ($rows as $r) $settings[$r['key']] = $r['value'];
+        jsonSuccess(['settings' => $settings]);
+    }
+
+    public function saveSiteSettings(): void {
+        requireAdmin();
+        $siteName = trim($_POST['site_name'] ?? '');
+        if (!$siteName) jsonError('اسم الموقع مطلوب');
+
+        $db = getDB();
+        $stmt = $db->prepare('INSERT INTO site_settings (`key`, value) VALUES (?,?) ON DUPLICATE KEY UPDATE value=?');
+        $stmt->execute(['site_name', $siteName, $siteName]);
+
+        // Handle logo upload
+        $logoPath = null;
+        if (!empty($_FILES['logo']['tmp_name'])) {
+            $uploadDir = ROOT . '/uploads/';
+            if (!is_dir($uploadDir)) mkdir($uploadDir, 0755, true);
+            $ext = strtolower(pathinfo($_FILES['logo']['name'], PATHINFO_EXTENSION));
+            $allowed = ['jpg','jpeg','png','gif','svg','webp'];
+            if (!in_array($ext, $allowed)) jsonError('نوع الملف غير مسموح');
+            if ($_FILES['logo']['size'] > 2 * 1024 * 1024) jsonError('الحجم الأقصى 2MB');
+            $fname = 'logo_' . time() . '.' . $ext;
+            move_uploaded_file($_FILES['logo']['tmp_name'], $uploadDir . $fname);
+            $logoPath = '/uploads/' . $fname;
+            $stmt->execute(['site_logo', $logoPath, $logoPath]);
+        } elseif (!empty($_POST['clear_logo'])) {
+            $stmt->execute(['site_logo', null, null]);
+        }
+
+        jsonSuccess(['site_name' => $siteName, 'site_logo' => $logoPath], 'تم حفظ الإعدادات');
+    }
+
+    // ─── Page Link Requests ───────────────────────────────────────────────────
+
+    public function listLinkRequests(): void {
+        requireAdmin();
+        $status = $_GET['status'] ?? '';
+        $db = getDB();
+        $sql = 'SELECT r.*, u.name as user_name, u.phone FROM page_link_requests r JOIN users u ON u.id = r.user_id';
+        if ($status) {
+            $stmt = $db->prepare($sql . ' WHERE r.status=? ORDER BY r.created_at DESC');
+            $stmt->execute([$status]);
+        } else {
+            $stmt = $db->query($sql . ' ORDER BY r.created_at DESC');
+        }
+        jsonSuccess(['requests' => $stmt->fetchAll()]);
+    }
+
+    public function updateLinkRequest(): void {
+        requireAdmin();
+        $data   = json_decode(file_get_contents('php://input'), true) ?? [];
+        $id     = (int)($data['id'] ?? 0);
+        $status = $data['status'] ?? '';
+        $note   = $data['note'] ?? '';
+        if (!$id || !in_array($status, ['approved','rejected'])) jsonError('Invalid request');
+        getDB()->prepare('UPDATE page_link_requests SET status=?, admin_note=? WHERE id=?')->execute([$status, $note, $id]);
+        jsonSuccess([], 'Updated');
+    }
+
+    public function pendingLinkRequests(): void {
+        requireAdmin();
+        $count = getDB()->query("SELECT COUNT(*) FROM page_link_requests WHERE status='pending'")->fetchColumn();
+        jsonSuccess(['count' => (int)$count]);
+    }
+
+    // ─── Private ──────────────────────────────────────────────────────────────
+
+    private function getAdminToken(string $platform = 'facebook'): ?string {
+        $row = getDB()->prepare('SELECT access_token FROM admin_tokens WHERE platform=? LIMIT 1');
+        $row->execute([$platform]);
+        $r = $row->fetch();
+        if (!$r) return null;
+        return decryptToken($r['access_token']);
+    }
+
+    private function getAdminTokenOrFail(string $platform = 'facebook'): string {
+        $token = $this->getAdminToken($platform);
+        if (!$token) jsonError("No $platform token configured", 400);
+        return $token;
+    }
+
+    private function getPagesList(string $platform = ''): array {
+        $db = getDB();
+        if ($platform && in_array($platform, ['facebook', 'instagram'])) {
+            $stmt = $db->prepare('SELECT id,page_id,page_name,platform,created_at FROM pages WHERE platform=? ORDER BY page_name');
+            $stmt->execute([$platform]);
+        } else {
+            $stmt = $db->query('SELECT id,page_id,page_name,platform,created_at FROM pages ORDER BY platform,page_name');
+        }
+        return $stmt->fetchAll();
+    }
+
+    // ─── WhatsApp Broadcast ───────────────────────────────────────────────────
+
+    private const WA_API_URL = 'http://35.184.247.251:5000/api/send';
+    private const WA_API_KEY = '6385628956b38bcbf8791bf4317f61561eb932b12b4a0d0106266b451e98fc22';
+
+    private function sendWhatsApp(string $phone, string $message): array {
+        $ch = curl_init(self::WA_API_URL);
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_POST           => true,
+            CURLOPT_TIMEOUT        => 15,
+            CURLOPT_POSTFIELDS     => json_encode(compact('phone', 'message')),
+            CURLOPT_HTTPHEADER     => [
+                'Content-Type: application/json',
+                'X-Api-Key: ' . self::WA_API_KEY,
+            ],
+        ]);
+        $res = curl_exec($ch);
+        curl_close($ch);
+        return json_decode($res, true) ?? ['success' => false];
+    }
+
+    // POST /api/admin/whatsapp/send-one
+    // Body: { user_id, message }
+    public function waSendOne(): void {
+        requireAdmin();
+        $data    = json_decode(file_get_contents('php://input'), true) ?? [];
+        $userId  = (int)($data['user_id'] ?? 0);
+        $message = trim($data['message'] ?? '');
+        if (!$userId || !$message) jsonError('user_id والرسالة مطلوبان');
+
+        $db   = getDB();
+        $stmt = $db->prepare('SELECT id, name, phone FROM users WHERE id = ? AND role = "user" LIMIT 1');
+        $stmt->execute([$userId]);
+        $user = $stmt->fetch();
+        if (!$user) jsonError('المستخدم غير موجود');
+
+        $result = $this->sendWhatsApp($user['phone'], $message);
+        if (!empty($result['success'])) {
+            // Log the message
+            $db->prepare(
+                'INSERT INTO wa_messages (target_type, target_id, message, status) VALUES ("user", ?, ?, "sent")'
+            )->execute([$userId, $message]);
+            jsonSuccess(['phone' => $user['phone']], 'تم إرسال الرسالة بنجاح');
+        } else {
+            jsonError('فشل إرسال الرسالة: ' . ($result['error'] ?? 'خطأ غير معروف'));
+        }
+    }
+
+    // POST /api/admin/whatsapp/broadcast
+    // Body: { message, delay_seconds? }  — sends to ALL users with timing delay
+    public function waBroadcast(): void {
+        requireAdmin();
+        $data         = json_decode(file_get_contents('php://input'), true) ?? [];
+        $message      = trim($data['message']        ?? '');
+        $delaySeconds = max(3, min(60, (int)($data['delay_seconds'] ?? 5))); // 3-60 s between messages
+        if (!$message) jsonError('الرسالة مطلوبة');
+
+        $db    = getDB();
+        $users = $db->query("SELECT id, name, phone FROM users WHERE role = 'user' ORDER BY id ASC")->fetchAll();
+        if (empty($users)) jsonError('لا يوجد مستخدمون');
+
+        // Save broadcast job
+        $db->prepare(
+            'INSERT INTO wa_messages (target_type, target_id, message, status, total_users) VALUES ("all", 0, ?, "queued", ?)'
+        )->execute([$message, count($users)]);
+        $jobId = (int)$db->lastInsertId();
+
+        $sent   = 0;
+        $failed = 0;
+        foreach ($users as $i => $user) {
+            if ($i > 0) sleep($delaySeconds);  // anti-ban delay
+            $result = $this->sendWhatsApp($user['phone'], $message);
+            if (!empty($result['success'])) {
+                $sent++;
+            } else {
+                $failed++;
+            }
+        }
+
+        $db->prepare('UPDATE wa_messages SET status="sent", sent_count=?, failed_count=? WHERE id=?')
+           ->execute([$sent, $failed, $jobId]);
+
+        jsonSuccess([
+            'total'  => count($users),
+            'sent'   => $sent,
+            'failed' => $failed,
+        ], "تم الإرسال: {$sent} نجح، {$failed} فشل");
+    }
+
+    // GET /api/admin/whatsapp/logs
+    public function waLogs(): void {
+        requireAdmin();
+        $logs = getDB()->query(
+            'SELECT m.*, u.name as user_name, u.phone as user_phone
+             FROM wa_messages m
+             LEFT JOIN users u ON u.id = m.target_id AND m.target_type = "user"
+             ORDER BY m.created_at DESC LIMIT 100'
+        )->fetchAll();
+        jsonSuccess(['logs' => $logs]);
+    }
+}
