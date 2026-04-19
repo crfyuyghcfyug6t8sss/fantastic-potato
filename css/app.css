@@ -1327,3 +1327,151 @@ tr:hover td { background: rgba(255,255,255,.02); }
   /* Card body smaller padding */
   .card-body { padding: 14px; }
 }
+
+/* ══════════════════════════════════════════════════════════════════════════ */
+/* ─── TOAST STACK (top-center, RTL) ──────────────────────────────────────── */
+/* ══════════════════════════════════════════════════════════════════════════ */
+.toast-stack {
+  position: fixed;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 10000;
+  pointer-events: none;
+  max-width: calc(100vw - 24px);
+  width: auto;
+}
+.toast {
+  pointer-events: auto;
+  color: #fff;
+  padding: 11px 18px;
+  border-radius: 10px;
+  font-size: 14px;
+  font-weight: 700;
+  box-shadow: 0 8px 24px rgba(0,0,0,.28);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  animation: toastIn .25s ease;
+  max-width: 90vw;
+}
+.toast-icon {
+  display: inline-flex;
+  width: 22px;
+  height: 22px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: rgba(255,255,255,.22);
+  font-size: 13px;
+  font-weight: 900;
+}
+.toast-out { animation: toastOut .25s ease forwards; }
+@keyframes toastIn  { from { transform: translateY(-8px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+@keyframes toastOut { to   { transform: translateY(-8px); opacity: 0; } }
+
+/* ══════════════════════════════════════════════════════════════════════════ */
+/* ─── FLOATING SUPPORT BUTTON ────────────────────────────────────────────── */
+/* ══════════════════════════════════════════════════════════════════════════ */
+.support-fab {
+  position: fixed;
+  bottom: 20px;
+  left: 20px;
+  z-index: 9998;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+.support-btn {
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #25d366, #128c7e);
+  color: #fff;
+  border: none;
+  cursor: pointer;
+  box-shadow: 0 8px 24px rgba(37,211,102,.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform .2s;
+}
+.support-btn:hover { transform: scale(1.08); }
+.support-menu {
+  display: none;
+  flex-direction: column;
+  gap: 6px;
+  background: var(--bg2, #1a1f2e);
+  border: 1px solid var(--border, #2a3040);
+  padding: 8px;
+  border-radius: 12px;
+  min-width: 180px;
+  box-shadow: 0 12px 32px rgba(0,0,0,.35);
+}
+.support-menu.open { display: flex; animation: toastIn .2s ease; }
+.support-link {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px;
+  border-radius: 8px;
+  color: var(--text, #fff);
+  text-decoration: none;
+  font-size: 13px;
+  font-weight: 700;
+  transition: background .15s;
+}
+.support-link:hover { background: var(--bg3, rgba(255,255,255,.06)); }
+.support-link.wa { color: #25d366; }
+.support-link.tg { color: #0088cc; }
+
+/* ══════════════════════════════════════════════════════════════════════════ */
+/* ─── CURRENCY TOGGLE (USD/SYP) ──────────────────────────────────────────── */
+/* ══════════════════════════════════════════════════════════════════════════ */
+.currency-toggle {
+  background: var(--bg2);
+  padding: 4px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  display: inline-flex;
+  width: fit-content;
+}
+.curr-pill {
+  border: none;
+  background: transparent;
+  color: var(--muted, #94a3b8);
+  padding: 7px 16px;
+  font-size: 13px;
+  font-weight: 700;
+  border-radius: 7px;
+  cursor: pointer;
+  transition: all .15s;
+}
+.curr-pill.selected {
+  background: var(--blue, #3b82f6);
+  color: #fff;
+  box-shadow: 0 2px 8px rgba(59,130,246,.4);
+}
+.curr-pill:disabled { cursor: not-allowed; }
+
+/* Mobile: smaller floating button on tiny screens */
+@media (max-width: 480px) {
+  .support-fab { bottom: 16px; left: 12px; }
+  .support-btn { width: 46px; height: 46px; }
+  .support-menu { min-width: 160px; }
+  /* Support the two-col wallet hero stacking */
+  .wallet-hero .wallet-amount { font-size: 26px; }
+  /* Toast smaller on phones */
+  .toast { font-size: 13px; padding: 9px 14px; }
+  /* Currency pills fill row */
+  .currency-toggle { width: 100%; justify-content: center; }
+  .curr-pill { flex: 1; text-align: center; }
+}
+
+/* Extra polish — results stat boxes & clickable campaign card */
+.campaign-card[onclick] { cursor: pointer; transition: transform .15s, box-shadow .15s; }
+.campaign-card[onclick]:hover { transform: translateY(-2px); box-shadow: 0 8px 24px rgba(0,0,0,.18); }

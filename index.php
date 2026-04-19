@@ -63,12 +63,25 @@ if (str_starts_with($uri, '/api/')) {
 
         'GET:admin/campaigns'            => ['AdminController', 'listCampaigns'],
         'POST:admin/campaigns/update'    => ['AdminController', 'updateCampaign'],
+        'POST:admin/campaigns/results'   => ['AdminController', 'updateCampaignResults'],
+
+        'GET:admin/coupons'              => ['AdminController', 'listCoupons'],
+        'POST:admin/coupons'             => ['AdminController', 'saveCoupon'],
+        'POST:admin/coupons/delete'      => ['AdminController', 'deleteCoupon'],
+
+        'POST:admin/user-restrict'       => ['AdminController', 'setPageRestricted'],
+        'POST:admin/user-points'         => ['AdminController', 'adjustPoints'],
+        'GET:admin/accounting'           => ['AdminController', 'accounting'],
+        'POST:admin/support-links'       => ['AdminController', 'saveSupportLinks'],
 
         'GET:user/pages'                 => ['UserController',  'myPages'],
         'GET:user/page-pic'              => ['UserController',  'getPagePicture'],
         'GET:user/page-posts'            => ['UserController',  'pagePosts'],
         'GET:user/campaigns'             => ['UserController',  'myCampaigns'],
+        'GET:user/campaign-details'      => ['UserController',  'campaignDetails'],
         'POST:user/campaigns'            => ['UserController',  'createCampaign'],
+        'POST:user/redeem-coupon'        => ['UserController',  'redeemCoupon'],
+        'POST:user/convert-points'       => ['UserController',  'convertPoints'],
         'GET:user/payment-history'       => ['UserController',  'paymentHistory'],
         'GET:user/wallet'                => ['UserController',  'walletInfo'],
         'POST:user/deposit'              => ['UserController',  'submitDeposit'],

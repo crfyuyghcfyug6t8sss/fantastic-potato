@@ -9,6 +9,7 @@ class UserController {
 
         if ($user['role'] === 'admin') {
             $pages = $db->query('SELECT id, page_id, page_name, platform FROM pages ORDER BY platform, page_name')->fetchAll();
+            $restricted = 0;
         } else {
             $stmt = $db->prepare(
                 'SELECT p.id, p.page_id, p.page_name, p.platform
@@ -19,9 +20,13 @@ class UserController {
             );
             $stmt->execute([$user['id']]);
             $pages = $stmt->fetchAll();
+
+            $rStmt = $db->prepare('SELECT page_restricted FROM users WHERE id=? LIMIT 1');
+            $rStmt->execute([$user['id']]);
+            $restricted = (int)($rStmt->fetch()['page_restricted'] ?? 0);
         }
 
-        jsonSuccess(['pages' => $pages]);
+        jsonSuccess(['pages' => $pages, 'restricted' => $restricted]);
     }
 
     // ─── Posts ─────────────────────────────────────────
@@ -189,7 +194,7 @@ class UserController {
         $user = requireAuth();
         $db   = getDB();
 
-        $stmt = $db->prepare('SELECT balance FROM users WHERE id = ?');
+        $stmt = $db->prepare('SELECT balance, points FROM users WHERE id = ?');
         $stmt->execute([$user['id']]);
         $row = $stmt->fetch();
 
@@ -203,10 +208,16 @@ class UserController {
         $dStmt->execute([$user['id']]);
         $deposits = $dStmt->fetchAll();
 
+        $rate            = (float)($this->getSetting('exchange_rate_usd_syp') ?? 0);
+        $pointsToDollar  = (int)($this->getSetting('points_to_dollar')  ?? 100);
+
         jsonSuccess([
-            'balance'  => (float)($row['balance'] ?? 0),
-            'methods'  => $methods,
-            'deposits' => $deposits,
+            'balance'           => (float)($row['balance'] ?? 0),
+            'points'            => (int)($row['points'] ?? 0),
+            'methods'           => $methods,
+            'deposits'          => $deposits,
+            'exchange_rate'     => $rate,
+            'points_to_dollar'  => $pointsToDollar,
         ]);
     }
 
@@ -219,13 +230,26 @@ class UserController {
         $required = ['page_id','post_id','campaign_name','objective','gender','age_min','age_max','locations','budget'];
 
         foreach ($required as $f) {
-            if (empty($data[$f])) jsonError("Field '$f' is required");
+            if (empty($data[$f])) jsonError("الحقل '$f' مطلوب");
         }
 
-        $budget = (float)$data['budget'];
+        $allowedObjectives = ['followers','messages','engagement','visits','sales','video_views'];
+        if (!in_array($data['objective'], $allowedObjectives, true)) {
+            jsonError('الهدف من الحملة غير صالح');
+        }
 
-        if ($budget < 10 || $budget > 1000) {
-            jsonError('Budget must be between $10 and $1000');
+        $budget       = (float)$data['budget'];
+        $durationDays = max(1, (int)($data['duration_days'] ?? 1));
+        $totalBudget  = $budget * $durationDays;
+
+        if ($budget < 2) {
+            jsonError('الحد الأدنى للميزانية اليومية 2 دولار');
+        }
+        if ($totalBudget < 7) {
+            jsonError('الحد الأدنى لإجمالي الميزانية 7 دولار');
+        }
+        if ($totalBudget > 5000) {
+            jsonError('الحد الأقصى لإجمالي الميزانية 5000 دولار');
         }
 
         $db = getDB();
@@ -234,8 +258,8 @@ class UserController {
         $stmt->execute([$user['id']]);
         $balRow = $stmt->fetch();
 
-        if (!$balRow || (float)$balRow['balance'] < $budget) {
-            jsonError('Insufficient balance');
+        if (!$balRow || (float)$balRow['balance'] < $totalBudget) {
+            jsonError('رصيدك غير كافٍ لإطلاق هذه الحملة');
         }
 
         $stmt = $db->prepare('SELECT page_name FROM pages WHERE page_id = ? LIMIT 1');
@@ -246,11 +270,14 @@ class UserController {
             ? json_encode($data['locations'], JSON_UNESCAPED_UNICODE)
             : $data['locations'];
 
+        $keywords = trim((string)($data['keywords'] ?? ''));
+        $postUrl  = trim((string)($data['post_url'] ?? ''));
+
         $stmt = $db->prepare(
-            'INSERT INTO campaigns 
-             (user_id,page_id,page_name,post_id,post_message,post_picture,campaign_name,
-              objective,gender,age_min,age_max,locations,budget,status)
-             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,\'pending\')'
+            'INSERT INTO campaigns
+             (user_id,page_id,page_name,post_id,post_message,post_picture,post_url,campaign_name,
+              objective,gender,age_min,age_max,locations,keywords,budget,duration_days,status)
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,\'pending\')'
         );
 
         $stmt->execute([
@@ -260,19 +287,138 @@ class UserController {
             $data['post_id'],
             $data['post_message'] ?? '',
             $data['post_picture'] ?? '',
+            $postUrl ?: null,
             $data['campaign_name'],
             $data['objective'],
             $data['gender'],
             (int)$data['age_min'],
             (int)$data['age_max'],
             $locations,
-            $budget,
+            $keywords ?: null,
+            $totalBudget,
+            $durationDays,
         ]);
 
         $db->prepare('UPDATE users SET balance = balance - ? WHERE id = ?')
-           ->execute([$budget, $user['id']]);
+           ->execute([$totalBudget, $user['id']]);
 
-        jsonSuccess(['id' => $db->lastInsertId()]);
+        // نقاط: نقطة واحدة لكل دولار يُصرف افتراضياً (قابل للتعديل من إعدادات الموقع)
+        $rate = (int)($this->getSetting('points_per_dollar') ?? 1);
+        if ($rate > 0) {
+            $earned = (int)floor($totalBudget * $rate);
+            if ($earned > 0) {
+                $db->prepare('UPDATE users SET points = points + ? WHERE id = ?')
+                   ->execute([$earned, $user['id']]);
+            }
+        }
+
+        jsonSuccess(['id' => $db->lastInsertId()], 'تم إرسال الحملة للمراجعة');
+    }
+
+    private function getSetting(string $key): ?string {
+        $stmt = getDB()->prepare('SELECT value FROM site_settings WHERE `key` = ? LIMIT 1');
+        $stmt->execute([$key]);
+        $r = $stmt->fetch();
+        return $r['value'] ?? null;
+    }
+
+    // ─── Campaign details (single) ─────────────────────────────────────────────
+    public function campaignDetails(): void {
+        $user = requireAuth();
+        $id   = (int)($_GET['id'] ?? 0);
+        if (!$id) jsonError('معرّف الحملة مطلوب');
+
+        $db = getDB();
+        $stmt = $db->prepare('SELECT * FROM campaigns WHERE id=? AND user_id=? LIMIT 1');
+        $stmt->execute([$id, $user['id']]);
+        $c = $stmt->fetch();
+        if (!$c) jsonError('الحملة غير موجودة', 404);
+        $c['locations'] = json_decode($c['locations'], true);
+
+        $hasResults = ((int)$c['impressions'] + (int)$c['clicks'] + (float)$c['spend']) > 0
+                       || !empty($c['results_note']);
+
+        jsonSuccess(['campaign' => $c, 'has_results' => $hasResults]);
+    }
+
+    // ─── Coupons (user) ────────────────────────────────────────────────────────
+    public function redeemCoupon(): void {
+        $user = requireAuth();
+        $data = json_decode(file_get_contents('php://input'), true) ?? [];
+        $code = strtoupper(trim($data['code'] ?? ''));
+        if (!$code) jsonError('الرجاء إدخال كود الكوبون');
+
+        $db = getDB();
+        $stmt = $db->prepare('SELECT * FROM coupons WHERE code=? AND is_active=1 LIMIT 1');
+        $stmt->execute([$code]);
+        $cp = $stmt->fetch();
+        if (!$cp) jsonError('كود الكوبون غير صالح أو منتهي');
+
+        if ($cp['max_uses'] > 0 && (int)$cp['used_count'] >= (int)$cp['max_uses']) {
+            jsonError('انتهت عدد مرات استخدام هذا الكوبون');
+        }
+
+        $alreadyStmt = $db->prepare('SELECT id FROM coupon_redemptions WHERE coupon_id=? AND user_id=? LIMIT 1');
+        $alreadyStmt->execute([$cp['id'], $user['id']]);
+        if ($alreadyStmt->fetch()) jsonError('لقد استخدمت هذا الكوبون من قبل');
+
+        // Calculate amount (percent applies to current balance, fixed = absolute)
+        $balStmt = $db->prepare('SELECT balance FROM users WHERE id=? LIMIT 1');
+        $balStmt->execute([$user['id']]);
+        $balance = (float)($balStmt->fetch()['balance'] ?? 0);
+
+        if ($cp['type'] === 'percent') {
+            $bonus = round($balance * ((float)$cp['value'] / 100), 2);
+            if ($bonus <= 0) $bonus = (float)$cp['value']; // fallback
+        } else {
+            $bonus = (float)$cp['value'];
+        }
+        if ($bonus <= 0) jsonError('قيمة الكوبون غير صالحة');
+
+        $db->beginTransaction();
+        try {
+            $db->prepare('INSERT INTO coupon_redemptions (coupon_id,user_id,amount) VALUES (?,?,?)')
+               ->execute([$cp['id'], $user['id'], $bonus]);
+            $db->prepare('UPDATE coupons SET used_count = used_count + 1 WHERE id=?')->execute([$cp['id']]);
+            $db->prepare('UPDATE users SET balance = balance + ? WHERE id=?')->execute([$bonus, $user['id']]);
+            $db->commit();
+        } catch (\Throwable $e) {
+            $db->rollBack();
+            jsonError('تعذّر تطبيق الكوبون، حاول لاحقاً');
+        }
+
+        jsonSuccess(['amount' => $bonus], "تم إضافة \${$bonus} إلى رصيدك");
+    }
+
+    // ─── Points (user) ─────────────────────────────────────────────────────────
+    public function convertPoints(): void {
+        $user = requireAuth();
+        $data = json_decode(file_get_contents('php://input'), true) ?? [];
+        $points = (int)($data['points'] ?? 0);
+        if ($points <= 0) jsonError('الرجاء إدخال عدد النقاط');
+
+        $rate = max(1, (int)($this->getSetting('points_to_dollar') ?? 100));
+        if ($points < $rate) jsonError("الحد الأدنى للتحويل {$rate} نقطة");
+
+        $dollars = floor($points / $rate);
+        $usePts  = $dollars * $rate;
+
+        $db = getDB();
+        $stmt = $db->prepare('SELECT points FROM users WHERE id=? LIMIT 1');
+        $stmt->execute([$user['id']]);
+        $row = $stmt->fetch();
+        if (!$row || (int)$row['points'] < $usePts) jsonError('نقاطك غير كافية');
+
+        $db->beginTransaction();
+        try {
+            $db->prepare('UPDATE users SET points = points - ?, balance = balance + ? WHERE id=?')
+               ->execute([$usePts, $dollars, $user['id']]);
+            $db->commit();
+        } catch (\Throwable $e) {
+            $db->rollBack();
+            jsonError('تعذّر تحويل النقاط، حاول لاحقاً');
+        }
+        jsonSuccess(['amount' => $dollars, 'points_used' => $usePts], "تم تحويل {$usePts} نقطة إلى \${$dollars}");
     }
 
     // ─── My Campaigns ──────────────────────────────────────────────────────────
