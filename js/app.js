@@ -2437,10 +2437,12 @@ async function renderAccounting() {
       ${statCard('wallet',  '$' + Number(a.total_balances).toFixed(2),  'أرصدة المستخدمين',  'blue')}
       ${statCard('dollar',  '$' + Number(a.total_deposits).toFixed(2),  'إجمالي الإيداعات',   'green')}
       ${statCard('rocket',  '$' + Number(a.total_campaigns).toFixed(2), 'إجمالي ميزانيات الحملات', 'purple')}
-      ${statCard('dollar',  '$' + Number(a.total_spend).toFixed(2),     'إجمالي المصروف',     'amber')}
+      ${statCard('dollar',  '$' + Number(a.total_spend).toFixed(2),     'المصروف الفعلي',     'amber')}
+      ${statCard('dollar',  '$' + Number(a.displayed_spend).toFixed(2), 'المصروف الظاهر للزبائن (+' + Number(a.profit_margin_percent).toFixed(1) + '%)', 'blue')}
+      ${statCard('dollar',  '$' + Number(a.profit_from_margin).toFixed(2), 'الربح من نسبة الهامش', 'green')}
       ${statCard('dollar',  '$' + Number(a.total_coupon_grant).toFixed(2), 'إجمالي مكافآت الكوبونات', 'indigo')}
       ${statCard('history', Number(a.total_points).toLocaleString(),    'إجمالي النقاط',       'purple')}
-      ${statCard('dollar',  '$' + Number(a.profit).toFixed(2),          'الربح (إيداع − مصروف)', a.profit >= 0 ? 'green' : 'red')}
+      ${statCard('dollar',  '$' + Number(a.profit).toFixed(2),          'الربح الكلي (إيداع − مصروف)', a.profit >= 0 ? 'green' : 'red')}
     </div>`;
 }
 
@@ -2461,6 +2463,11 @@ async function renderSupportLinks() {
           <div class="form-group"><label class="form-label">نقاط لكل 1$ إنفاق</label><input class="form-control" id="sl-ppd" type="number" min="0" value="1"></div>
           <div class="form-group"><label class="form-label">نقاط = 1$ رصيد</label><input class="form-control" id="sl-ptd" type="number" min="1" value="100"></div>
           <div class="form-group" style="grid-column:1/-1"><label class="form-label">سعر صرف الدولار مقابل الليرة السورية</label><input class="form-control" id="sl-rate" type="number" min="0" value="0"></div>
+          <div class="form-group" style="grid-column:1/-1">
+            <label class="form-label">نسبة الأرباح على المصروف % (تُضاف على المبلغ الذي يراه الزبون)</label>
+            <input class="form-control" id="sl-margin" type="number" min="0" max="200" step="0.1" value="20">
+            <div class="text-sm text-muted" style="margin-top:4px">مثال: 20% — إذا صُرف $100 فعلياً، سيرى الزبون $120، والـ $20 ستظهر كأرباح في الحسابات.</div>
+          </div>
         </div>
         <button class="btn btn-primary" onclick="saveSupportLinks()">${IC.save} حفظ</button>
       </div>
@@ -2474,7 +2481,8 @@ async function renderSupportLinks() {
     q('#sl-form').value = s.support_form_url || '';
     q('#sl-ppd').value  = s.points_per_dollar || 1;
     q('#sl-ptd').value  = s.points_to_dollar || 100;
-    q('#sl-rate').value = s.exchange_rate_usd_syp || 0;
+    q('#sl-rate').value   = s.exchange_rate_usd_syp || 0;
+    q('#sl-margin').value = s.profit_margin_percent ?? 20;
   }
 }
 
@@ -2485,7 +2493,8 @@ async function saveSupportLinks() {
     support_form_url:      (q('#sl-form').value || '').trim(),
     points_per_dollar:     q('#sl-ppd').value || '1',
     points_to_dollar:      q('#sl-ptd').value || '100',
-    exchange_rate_usd_syp: q('#sl-rate').value || '0',
+    exchange_rate_usd_syp: q('#sl-rate').value   || '0',
+    profit_margin_percent: q('#sl-margin').value || '0',
   };
   const res = await API.post('admin/support-links', data);
   if (res.success) {

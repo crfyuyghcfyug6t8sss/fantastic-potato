@@ -135,6 +135,7 @@ runStep("site_settings new rows", function () use ($pdo) {
         'exchange_rate_usd_syp'  => '15000',
         'asset_version'          => (string) time(),
         'fb_ad_account_id'       => 'act_2573921513028991',
+        'profit_margin_percent'  => '20',
     ];
     $st = $pdo->prepare("INSERT IGNORE INTO site_settings (`key`, value) VALUES (?, ?)");
     foreach ($rows as $k => $v) $st->execute([$k, $v]);

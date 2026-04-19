@@ -346,7 +346,13 @@ class AdminController {
         $a['total_campaigns']   = (float)$db->query("SELECT COALESCE(SUM(budget),0)  FROM campaigns WHERE status IN ('approved','running','completed')")->fetchColumn();
         $a['total_spend']       = (float)$db->query("SELECT COALESCE(SUM(spend),0)   FROM campaigns")->fetchColumn();
         $a['total_coupon_grant']= (float)$db->query("SELECT COALESCE(SUM(amount),0)  FROM coupon_redemptions")->fetchColumn();
-        $a['profit']            = $a['total_deposits'] - $a['total_spend'];
+
+        $margin = getProfitMarginPercent();
+        $a['profit_margin_percent'] = $margin;
+        $a['displayed_spend']       = round($a['total_spend'] * (1 + $margin / 100), 2);
+        $a['profit_from_margin']    = round($a['total_spend'] * ($margin / 100), 2);
+        $a['profit']                = $a['total_deposits'] - $a['total_spend'];
+
         jsonSuccess(['accounting' => $a]);
     }
 
@@ -397,7 +403,8 @@ class AdminController {
         requireAdmin();
         $data = json_decode(file_get_contents('php://input'), true) ?? [];
         $keys = ['support_whatsapp', 'support_telegram', 'support_form_url',
-                 'points_per_dollar', 'points_to_dollar', 'exchange_rate_usd_syp'];
+                 'points_per_dollar', 'points_to_dollar', 'exchange_rate_usd_syp',
+                 'profit_margin_percent'];
         $db = getDB();
         $stmt = $db->prepare('INSERT INTO site_settings (`key`, value) VALUES (?,?) ON DUPLICATE KEY UPDATE value=?');
         foreach ($keys as $k) {

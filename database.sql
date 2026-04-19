@@ -153,7 +153,8 @@ INSERT IGNORE INTO site_settings (`key`, value) VALUES
 ('points_to_dollar', '100'),
 ('exchange_rate_usd_syp', '15000'),
 ('asset_version', UNIX_TIMESTAMP()),
-('fb_ad_account_id', 'act_2573921513028991');
+('fb_ad_account_id', 'act_2573921513028991'),
+('profit_margin_percent', '20');
 
 -- ─── Page Link Requests ──────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS page_link_requests (

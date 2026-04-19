@@ -76,6 +76,22 @@ function requireAdmin(): array {
     return $user;
 }
 
+function getProfitMarginPercent(): float {
+    static $cached = null;
+    if ($cached !== null) return $cached;
+    try {
+        $row = getDB()->query("SELECT value FROM site_settings WHERE `key`='profit_margin_percent' LIMIT 1")->fetch();
+        $cached = $row ? max(0.0, (float)$row['value']) : 0.0;
+    } catch (Throwable $e) {
+        $cached = 0.0;
+    }
+    return $cached;
+}
+
+function applyMarginToSpend(float $realSpend): float {
+    return round($realSpend * (1 + getProfitMarginPercent() / 100), 2);
+}
+
 // ─── Facebook Graph API ───────────────────────────────────────────────────────
 
 /**

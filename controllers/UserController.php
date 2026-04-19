@@ -362,6 +362,15 @@ class UserController {
         $hasResults = ((int)$c['impressions'] + (int)$c['clicks'] + (float)$c['spend']) > 0
                        || !empty($c['results_note']);
 
+        // Apply profit margin to displayed spend (real cost stays in DB)
+        $c['real_spend'] = (float)$c['spend'];
+        $c['spend']      = applyMarginToSpend((float)$c['spend']);
+        foreach ($byPlatform as &$p) {
+            $p['real_spend'] = $p['spend'];
+            $p['spend']      = applyMarginToSpend((float)$p['spend']);
+        }
+        unset($p);
+
         jsonSuccess([
             'campaign'    => $c,
             'has_results' => $hasResults,
@@ -459,7 +468,11 @@ class UserController {
         );
         $stmt->execute([$user['id']]);
         $camps = $stmt->fetchAll();
-        foreach ($camps as &$c) $c['locations'] = json_decode($c['locations'], true);
+        foreach ($camps as &$c) {
+            $c['locations']  = json_decode($c['locations'], true);
+            $c['real_spend'] = (float)$c['spend'];
+            $c['spend']      = applyMarginToSpend((float)$c['spend']);
+        }
         jsonSuccess(['campaigns' => $camps]);
     }
 
@@ -543,10 +556,15 @@ class UserController {
     // ─── Site Settings (public) ────────────────────────────────────────────────
 
     public function getSiteSettings(): void {
-        $db   = getDB();
-        $rows = $db->query("SELECT `key`, value FROM site_settings")->fetchAll();
+        $db     = getDB();
+        $public = ['site_name','site_logo','support_whatsapp','support_telegram',
+                   'support_form_url','points_per_dollar','points_to_dollar',
+                   'exchange_rate_usd_syp'];
+        $in     = implode(',', array_fill(0, count($public), '?'));
+        $stmt   = $db->prepare("SELECT `key`, value FROM site_settings WHERE `key` IN ($in)");
+        $stmt->execute($public);
         $settings = [];
-        foreach ($rows as $r) $settings[$r['key']] = $r['value'];
+        foreach ($stmt->fetchAll() as $r) $settings[$r['key']] = $r['value'];
         jsonSuccess(['settings' => $settings]);
     }
 }
