@@ -83,6 +83,7 @@ if (str_starts_with($uri, '/api/')) {
         'GET:user/campaign-details'      => ['UserController',  'campaignDetails'],
         'POST:user/campaigns'            => ['UserController',  'createCampaign'],
         'POST:user/redeem-coupon'        => ['UserController',  'redeemCoupon'],
+        'GET:user/active-coupon'         => ['UserController',  'activeCoupon'],
         'POST:user/convert-points'       => ['UserController',  'convertPoints'],
         'GET:user/payment-history'       => ['UserController',  'paymentHistory'],
         'GET:user/wallet'                => ['UserController',  'walletInfo'],

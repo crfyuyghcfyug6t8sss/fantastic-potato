@@ -122,6 +122,8 @@ CREATE TABLE IF NOT EXISTS coupon_redemptions (
     coupon_id   INT UNSIGNED NOT NULL,
     user_id     INT UNSIGNED NOT NULL,
     amount      DECIMAL(10,2) NOT NULL,
+    consumed_at DATETIME NULL,
+    consumed_in_campaign_id INT UNSIGNED NULL,
     created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE KEY uq_coupon_user (coupon_id, user_id),
     FOREIGN KEY (coupon_id) REFERENCES coupons(id) ON DELETE CASCADE,

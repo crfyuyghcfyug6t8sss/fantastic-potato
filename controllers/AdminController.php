@@ -360,8 +360,37 @@ class AdminController {
 
     public function listCoupons(): void {
         requireAdmin();
-        $rows = getDB()->query('SELECT * FROM coupons ORDER BY id DESC')->fetchAll();
-        jsonSuccess(['coupons' => $rows]);
+        // Aggregate per-coupon stats: actual consumed count, pending (percent only),
+        // and total discount/credit amount we've granted via this coupon.
+        $rows = getDB()->query(
+            "SELECT c.*,
+                    COALESCE(s.consumed_count, 0) AS consumed_count,
+                    COALESCE(s.pending_count,  0) AS pending_count,
+                    COALESCE(s.total_discount, 0) AS total_discount
+               FROM coupons c
+          LEFT JOIN (
+                SELECT coupon_id,
+                       SUM(consumed_at IS NOT NULL)         AS consumed_count,
+                       SUM(consumed_at IS NULL)             AS pending_count,
+                       SUM(CASE WHEN consumed_at IS NOT NULL THEN amount ELSE 0 END) AS total_discount
+                  FROM coupon_redemptions
+              GROUP BY coupon_id
+            ) s ON s.coupon_id = c.id
+           ORDER BY c.id DESC"
+        )->fetchAll();
+
+        $totalDiscount = 0.0;
+        $totalUses     = 0;
+        foreach ($rows as $r) {
+            $totalDiscount += (float)$r['total_discount'];
+            $totalUses     += (int)$r['consumed_count'];
+        }
+
+        jsonSuccess([
+            'coupons'        => $rows,
+            'total_discount' => round($totalDiscount, 2),
+            'total_uses'     => $totalUses,
+        ]);
     }
 
     public function saveCoupon(): void {

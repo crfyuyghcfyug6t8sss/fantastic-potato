@@ -254,11 +254,37 @@ class UserController {
 
         $db = getDB();
 
+        // Optional percent-coupon application
+        $applyCoupon = !empty($data['apply_coupon']);
+        $couponRow   = null;
+        $discount    = 0.0;
+        $finalCost   = $totalBudget;
+
+        if ($applyCoupon) {
+            $cstmt = $db->prepare(
+                "SELECT r.id AS redemption_id, c.id AS coupon_id, c.code, c.value AS percent
+                   FROM coupon_redemptions r
+                   JOIN coupons c ON c.id = r.coupon_id
+                  WHERE r.user_id = ?
+                    AND r.consumed_at IS NULL
+                    AND c.type = 'percent'
+                    AND c.is_active = 1
+                  ORDER BY r.id DESC
+                  LIMIT 1"
+            );
+            $cstmt->execute([$user['id']]);
+            $couponRow = $cstmt->fetch();
+            if (!$couponRow) jsonError('لا يوجد كوبون متاح لتطبيقه');
+
+            $discount  = round($totalBudget * ((float)$couponRow['percent'] / 100), 2);
+            $finalCost = max(0.0, round($totalBudget - $discount, 2));
+        }
+
         $stmt = $db->prepare('SELECT balance FROM users WHERE id = ?');
         $stmt->execute([$user['id']]);
         $balRow = $stmt->fetch();
 
-        if (!$balRow || (float)$balRow['balance'] < $totalBudget) {
+        if (!$balRow || (float)$balRow['balance'] < $finalCost) {
             jsonError('رصيدك غير كافٍ لإطلاق هذه الحملة');
         }
 
@@ -276,46 +302,70 @@ class UserController {
             $postUrl = 'https://www.facebook.com/' . $data['post_id'];
         }
 
-        $stmt = $db->prepare(
-            'INSERT INTO campaigns
-             (user_id,page_id,page_name,post_id,post_message,post_picture,post_url,campaign_name,
-              objective,gender,age_min,age_max,locations,keywords,budget,duration_days,status)
-             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,\'pending\')'
-        );
+        $db->beginTransaction();
+        try {
+            $stmt = $db->prepare(
+                'INSERT INTO campaigns
+                 (user_id,page_id,page_name,post_id,post_message,post_picture,post_url,campaign_name,
+                  objective,gender,age_min,age_max,locations,keywords,budget,duration_days,status)
+                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,\'pending\')'
+            );
 
-        $stmt->execute([
-            $user['id'],
-            $data['page_id'],
-            $pageRow['page_name'] ?? '',
-            $data['post_id'],
-            $data['post_message'] ?? '',
-            $data['post_picture'] ?? '',
-            $postUrl ?: null,
-            $data['campaign_name'],
-            $data['objective'],
-            $data['gender'],
-            (int)$data['age_min'],
-            (int)$data['age_max'],
-            $locations,
-            $keywords ?: null,
-            $totalBudget,
-            $durationDays,
-        ]);
+            $stmt->execute([
+                $user['id'],
+                $data['page_id'],
+                $pageRow['page_name'] ?? '',
+                $data['post_id'],
+                $data['post_message'] ?? '',
+                $data['post_picture'] ?? '',
+                $postUrl ?: null,
+                $data['campaign_name'],
+                $data['objective'],
+                $data['gender'],
+                (int)$data['age_min'],
+                (int)$data['age_max'],
+                $locations,
+                $keywords ?: null,
+                $totalBudget,
+                $durationDays,
+            ]);
 
-        $db->prepare('UPDATE users SET balance = balance - ? WHERE id = ?')
-           ->execute([$totalBudget, $user['id']]);
+            $campaignId = (int)$db->lastInsertId();
+
+            $db->prepare('UPDATE users SET balance = balance - ? WHERE id = ?')
+               ->execute([$finalCost, $user['id']]);
+
+            if ($couponRow) {
+                $db->prepare(
+                    'UPDATE coupon_redemptions
+                        SET amount = ?, consumed_at = NOW(), consumed_in_campaign_id = ?
+                      WHERE id = ?'
+                )->execute([$discount, $campaignId, $couponRow['redemption_id']]);
+                $db->prepare('UPDATE coupons SET used_count = used_count + 1 WHERE id = ?')
+                   ->execute([$couponRow['coupon_id']]);
+            }
+
+            $db->commit();
+        } catch (\Throwable $e) {
+            $db->rollBack();
+            jsonError('تعذّر إنشاء الحملة، حاول لاحقاً');
+        }
 
         // نقاط: نقطة واحدة لكل دولار يُصرف افتراضياً (قابل للتعديل من إعدادات الموقع)
         $rate = (int)($this->getSetting('points_per_dollar') ?? 1);
         if ($rate > 0) {
-            $earned = (int)floor($totalBudget * $rate);
+            $earned = (int)floor($finalCost * $rate);
             if ($earned > 0) {
                 $db->prepare('UPDATE users SET points = points + ? WHERE id = ?')
                    ->execute([$earned, $user['id']]);
             }
         }
 
-        jsonSuccess(['id' => $db->lastInsertId()], 'تم إرسال الحملة للمراجعة');
+        jsonSuccess([
+            'id'       => $campaignId,
+            'discount' => $discount,
+            'final'    => $finalCost,
+        ], 'تم إرسال الحملة للمراجعة');
     }
 
     private function getSetting(string $key): ?string {
@@ -399,32 +449,61 @@ class UserController {
         $alreadyStmt->execute([$cp['id'], $user['id']]);
         if ($alreadyStmt->fetch()) jsonError('لقد استخدمت هذا الكوبون من قبل');
 
-        // Calculate amount (percent applies to current balance, fixed = absolute)
-        $balStmt = $db->prepare('SELECT balance FROM users WHERE id=? LIMIT 1');
-        $balStmt->execute([$user['id']]);
-        $balance = (float)($balStmt->fetch()['balance'] ?? 0);
-
-        if ($cp['type'] === 'percent') {
-            $bonus = round($balance * ((float)$cp['value'] / 100), 2);
-            if ($bonus <= 0) $bonus = (float)$cp['value']; // fallback
-        } else {
+        // Fixed: credit wallet immediately, mark consumed, increment used_count.
+        // Percent: just register availability; discount is applied at campaign creation.
+        if ($cp['type'] === 'fixed') {
             $bonus = (float)$cp['value'];
-        }
-        if ($bonus <= 0) jsonError('قيمة الكوبون غير صالحة');
+            if ($bonus <= 0) jsonError('قيمة الكوبون غير صالحة');
 
-        $db->beginTransaction();
+            $db->beginTransaction();
+            try {
+                $db->prepare('INSERT INTO coupon_redemptions (coupon_id,user_id,amount,consumed_at) VALUES (?,?,?,NOW())')
+                   ->execute([$cp['id'], $user['id'], $bonus]);
+                $db->prepare('UPDATE coupons SET used_count = used_count + 1 WHERE id=?')->execute([$cp['id']]);
+                $db->prepare('UPDATE users SET balance = balance + ? WHERE id=?')->execute([$bonus, $user['id']]);
+                $db->commit();
+            } catch (\Throwable $e) {
+                $db->rollBack();
+                jsonError('تعذّر تطبيق الكوبون، حاول لاحقاً');
+            }
+
+            jsonSuccess(['amount' => $bonus, 'type' => 'fixed'], "تم إضافة \${$bonus} إلى رصيدك");
+        }
+
+        // type === 'percent'
+        $percent = (float)$cp['value'];
+        if ($percent <= 0) jsonError('قيمة الكوبون غير صالحة');
+
         try {
-            $db->prepare('INSERT INTO coupon_redemptions (coupon_id,user_id,amount) VALUES (?,?,?)')
-               ->execute([$cp['id'], $user['id'], $bonus]);
-            $db->prepare('UPDATE coupons SET used_count = used_count + 1 WHERE id=?')->execute([$cp['id']]);
-            $db->prepare('UPDATE users SET balance = balance + ? WHERE id=?')->execute([$bonus, $user['id']]);
-            $db->commit();
+            $db->prepare('INSERT INTO coupon_redemptions (coupon_id,user_id,amount,consumed_at) VALUES (?,?,?,NULL)')
+               ->execute([$cp['id'], $user['id'], 0]);
         } catch (\Throwable $e) {
-            $db->rollBack();
-            jsonError('تعذّر تطبيق الكوبون، حاول لاحقاً');
+            jsonError('تعذّر حفظ الكوبون، حاول لاحقاً');
         }
 
-        jsonSuccess(['amount' => $bonus], "تم إضافة \${$bonus} إلى رصيدك");
+        jsonSuccess(
+            ['type' => 'percent', 'percent' => $percent, 'code' => $cp['code']],
+            "تم تفعيل كوبون خصم {$percent}% — يمكنك استخدامه عند إنشاء حملة"
+        );
+    }
+
+    // Returns the user's available (unconsumed) percent coupon, if any.
+    public function activeCoupon(): void {
+        $user = requireAuth();
+        $stmt = getDB()->prepare(
+            "SELECT c.id, c.code, c.value AS percent
+               FROM coupon_redemptions r
+               JOIN coupons c ON c.id = r.coupon_id
+              WHERE r.user_id = ?
+                AND r.consumed_at IS NULL
+                AND c.type = 'percent'
+                AND c.is_active = 1
+              ORDER BY r.id DESC
+              LIMIT 1"
+        );
+        $stmt->execute([$user['id']]);
+        $row = $stmt->fetch();
+        jsonSuccess(['coupon' => $row ?: null]);
     }
 
     // ─── Points (user) ─────────────────────────────────────────────────────────

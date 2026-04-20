@@ -1658,6 +1658,8 @@ function openPromoModal(jsonStr) {
   promoObjective = 'engagement';
   promoBudget    = 5;
   promoDuration  = 5;
+  S.promoCoupon  = null;
+  S.promoCouponApplied = false;
 
   document.body.insertAdjacentHTML('beforeend', `
   <div class="modal-overlay" id="promo-overlay" onclick="if(event.target===this)closePromo()">
@@ -1746,6 +1748,7 @@ function openPromoModal(jsonStr) {
               </div>
             </div>
 
+            <div id="promo-coupon-box" style="display:none"></div>
             <div id="budget-preview" class="alert alert-info" style="margin:0;font-size:13px;line-height:1.7"></div>
           </div>
 
@@ -1779,7 +1782,28 @@ function openPromoModal(jsonStr) {
   </div>`);
 
   // Load Leaflet map + initial preview
-  setTimeout(() => { initPromoMap(); updateBudgetPreview(); }, 200);
+  setTimeout(() => { initPromoMap(); updateBudgetPreview(); loadPromoCoupon(); }, 200);
+}
+
+async function loadPromoCoupon() {
+  const res = await API.get('user/active-coupon');
+  if (!res.success || !res.coupon) return;
+  S.promoCoupon = res.coupon;
+  const box = q('#promo-coupon-box');
+  if (!box) return;
+  box.style.display = 'block';
+  box.innerHTML = `
+    <div class="alert" style="background:rgba(34,197,94,.08);border:1px solid rgba(34,197,94,.35);margin:0 0 10px;padding:10px 12px;border-radius:10px">
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:14px">
+        <input type="checkbox" id="promo-coupon-toggle" onchange="togglePromoCoupon(this.checked)">
+        <span>تطبيق كوبون <code style="font-weight:700">${esc(res.coupon.code)}</code> — خصم ${Number(res.coupon.percent)}%</span>
+      </label>
+    </div>`;
+}
+
+function togglePromoCoupon(on) {
+  S.promoCouponApplied = !!on;
+  updateBudgetPreview();
 }
 
 function syncNum(field, val, fromText) {
@@ -1821,10 +1845,23 @@ function updateBudgetPreview() {
   let warn = '';
   if (promoBudget < 2)  warn = '<div style="color:var(--red);font-weight:700">الحد الأدنى للميزانية اليومية 2 دولار.</div>';
   else if (total < 7)   warn = '<div style="color:var(--red);font-weight:700">الحد الأدنى لإجمالي الميزانية 7 دولار.</div>';
+
+  let discountLine = '';
+  let finalLine    = '';
+  if (S.promoCouponApplied && S.promoCoupon) {
+    const pct      = Number(S.promoCoupon.percent);
+    const discount = Math.round(total * (pct / 100) * 100) / 100;
+    const final    = Math.max(0, Math.round((total - discount) * 100) / 100);
+    discountLine = `<div style="color:var(--green);font-weight:700">خصم الكوبون (${pct}%): −$${discount.toFixed(2)}</div>`;
+    finalLine    = `<div>المبلغ المُستقطع من المحفظة: <strong style="color:var(--green)">$${final.toFixed(2)}</strong></div>`;
+  }
+
   el.innerHTML = `
     سيتم تشغيل إعلانك لمدة <strong>${promoDuration}</strong> أيام مقابل
     <strong style="color:var(--blue)">$${total.toFixed(2)}</strong>
     (يومياً ${promoBudget}$).
+    ${discountLine}
+    ${finalLine}
     ${warn}`;
 }
 
@@ -1934,6 +1971,7 @@ async function submitCampaign() {
     keywords:       keywords,
     budget:         promoBudget,
     duration_days:  promoDuration,
+    apply_coupon:   !!(S.promoCouponApplied && S.promoCoupon),
   });
 
   if (res.success) {
@@ -2111,6 +2149,13 @@ async function renderWallet() {
   window._walletExchangeRate = exchange_rate;
   window._walletPointsRate   = points_to_dollar;
 
+  // Fetch active (pending) percent coupon to show in the wallet banner.
+  let activeCp = null;
+  try {
+    const ac = await API.get('user/active-coupon');
+    if (ac.success) activeCp = ac.coupon;
+  } catch (e) {}
+
   q('#wallet-wrap').innerHTML = `
   <!-- Balance + Points hero -->
   <div class="grid-2 animate-fade-up" style="margin-bottom:18px">
@@ -2131,9 +2176,15 @@ async function renderWallet() {
   <!-- Coupon redemption -->
   <div class="card mb-4 animate-fade-up" style="animation-delay:.05s">
     <div class="card-header"><div class="card-title">استبدال كوبون</div></div>
-    <div class="card-body" style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-start">
-      <input class="form-control" id="coupon-code" placeholder="أدخل كود الكوبون" style="flex:1;min-width:160px;text-transform:uppercase">
-      <button class="btn btn-primary" id="coupon-btn" onclick="redeemCoupon()">استبدال</button>
+    <div class="card-body" style="display:flex;flex-direction:column;gap:10px">
+      <div id="active-coupon-banner">${activeCp ? `
+        <div class="alert" style="background:rgba(34,197,94,.08);border:1px solid rgba(34,197,94,.35);margin:0;padding:10px 12px;border-radius:10px;font-size:14px">
+          عندك كوبون خصم <code style="font-weight:700">${esc(activeCp.code)}</code> بقيمة <strong>${Number(activeCp.percent)}%</strong> — يمكنك تطبيقه عند إنشاء أي حملة جديدة.
+        </div>` : ''}</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-start">
+        <input class="form-control" id="coupon-code" placeholder="أدخل كود الكوبون" style="flex:1;min-width:160px;text-transform:uppercase">
+        <button class="btn btn-primary" id="coupon-btn" onclick="redeemCoupon()">استبدال</button>
+      </div>
     </div>
   </div>
 
@@ -2352,6 +2403,7 @@ async function renderAdminCoupons() {
         </div>
       </div>
     </div>
+    <div id="coup-stats" class="grid-2 mb-4" style="gap:10px"></div>
     <div class="card animate-fade-up">
       <div class="card-header"><div class="card-title">الكوبونات الحالية</div></div>
       <div id="coup-list" class="table-wrap"><div class="loading-center"><div class="spinner spinner-blue"></div></div></div>
@@ -2362,15 +2414,26 @@ async function renderAdminCoupons() {
 async function loadCoupons() {
   const res = await API.get('admin/coupons');
   const list = res.coupons || [];
+
+  q('#coup-stats').innerHTML = `
+    ${statCard('history', String(res.total_uses || 0),                 'إجمالي مرات الاستخدام',  'blue')}
+    ${statCard('dollar',  '$' + Number(res.total_discount||0).toFixed(2), 'إجمالي ما خسرناه (خصومات)', 'red')}`;
+
   const el = q('#coup-list');
   if (!list.length) { el.innerHTML = emptyState('inbox', 'لا توجد كوبونات بعد'); return; }
   el.innerHTML = `<table>
-    <thead><tr><th>الكود</th><th>النوع</th><th>القيمة</th><th>الاستخدامات</th><th>نشط</th><th>إجراء</th></tr></thead>
+    <thead><tr>
+      <th>الكود</th><th>النوع</th><th>القيمة</th>
+      <th>مُستخدم</th><th>قيد الانتظار</th><th>إجمالي الخصم</th>
+      <th>نشط</th><th>إجراء</th>
+    </tr></thead>
     <tbody>${list.map(c => `<tr>
       <td><code style="font-size:13px;font-weight:700">${esc(c.code)}</code></td>
       <td>${c.type === 'percent' ? 'نسبة %' : 'ثابت $'}</td>
       <td><strong>${c.type === 'percent' ? Number(c.value)+'%' : '$'+Number(c.value).toFixed(2)}</strong></td>
-      <td>${c.used_count} / ${c.max_uses > 0 ? c.max_uses : '∞'}</td>
+      <td>${c.consumed_count} / ${c.max_uses > 0 ? c.max_uses : '∞'}</td>
+      <td>${c.type === 'percent' ? (c.pending_count || 0) : '—'}</td>
+      <td><strong style="color:var(--danger)">$${Number(c.total_discount||0).toFixed(2)}</strong></td>
       <td>${c.is_active ? '<span class="badge badge-green">نعم</span>' : '<span class="badge badge-gray">لا</span>'}</td>
       <td>
         <button class="btn btn-ghost btn-xs" onclick='editCoupon(${JSON.stringify(c).replace(/"/g,"&quot;")})'>${IC.edit}</button>

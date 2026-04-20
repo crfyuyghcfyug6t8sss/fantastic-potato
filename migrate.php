@@ -117,11 +117,23 @@ runStep("coupon_redemptions table", function () use ($pdo, $db) {
         coupon_id   INT UNSIGNED NOT NULL,
         user_id     INT UNSIGNED NOT NULL,
         amount      DECIMAL(10,2) NOT NULL,
+        consumed_at DATETIME NULL,
+        consumed_in_campaign_id INT UNSIGNED NULL,
         created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         UNIQUE KEY uq_coupon_user (coupon_id, user_id),
         FOREIGN KEY (coupon_id) REFERENCES coupons(id) ON DELETE CASCADE,
         FOREIGN KEY (user_id)   REFERENCES users(id)   ON DELETE CASCADE
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+});
+runStep("coupon_redemptions.consumed_at", function () use ($pdo, $db) {
+    if (columnExists($pdo, $db, 'coupon_redemptions', 'consumed_at')) return 'skip';
+    $pdo->exec("ALTER TABLE coupon_redemptions ADD COLUMN consumed_at DATETIME NULL AFTER amount");
+    // Backfill: existing rows were all immediately consumed under old logic
+    $pdo->exec("UPDATE coupon_redemptions SET consumed_at = created_at WHERE consumed_at IS NULL");
+});
+runStep("coupon_redemptions.consumed_in_campaign_id", function () use ($pdo, $db) {
+    if (columnExists($pdo, $db, 'coupon_redemptions', 'consumed_in_campaign_id')) return 'skip';
+    $pdo->exec("ALTER TABLE coupon_redemptions ADD COLUMN consumed_in_campaign_id INT UNSIGNED NULL AFTER consumed_at");
 });
 
 // ── site_settings rows ────────────────────────────────────────
