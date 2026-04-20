@@ -2468,6 +2468,11 @@ async function renderSupportLinks() {
             <input class="form-control" id="sl-margin" type="number" min="0" max="200" step="0.1" value="20">
             <div class="text-sm text-muted" style="margin-top:4px">مثال: 20% — إذا صُرف $100 فعلياً، سيرى الزبون $120، والـ $20 ستظهر كأرباح في الحسابات.</div>
           </div>
+          <div class="form-group" style="grid-column:1/-1">
+            <label class="form-label">معرّف الحساب الإعلاني في Facebook (Ad Account ID)</label>
+            <input class="form-control" id="sl-adact" dir="ltr" placeholder="act_1234567890">
+            <div class="text-sm text-muted" style="margin-top:4px">يُستخدم عند جلب نتائج الحملات من Facebook Graph API. يجب أن يبدأ بـ <code>act_</code>.</div>
+          </div>
         </div>
         <button class="btn btn-primary" onclick="saveSupportLinks()">${IC.save} حفظ</button>
       </div>
@@ -2483,6 +2488,7 @@ async function renderSupportLinks() {
     q('#sl-ptd').value  = s.points_to_dollar || 100;
     q('#sl-rate').value   = s.exchange_rate_usd_syp || 0;
     q('#sl-margin').value = s.profit_margin_percent ?? 20;
+    q('#sl-adact').value  = s.fb_ad_account_id || '';
   }
 }
 
@@ -2495,6 +2501,7 @@ async function saveSupportLinks() {
     points_to_dollar:      q('#sl-ptd').value || '100',
     exchange_rate_usd_syp: q('#sl-rate').value   || '0',
     profit_margin_percent: q('#sl-margin').value || '0',
+    fb_ad_account_id:      (q('#sl-adact').value || '').trim(),
   };
   const res = await API.post('admin/support-links', data);
   if (res.success) {
