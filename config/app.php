@@ -163,21 +163,52 @@ function fbGet(string $endpoint, string $token, array $params = []): array {
     $params['access_token'] = $token;
     $url = FACEBOOK_GRAPH_URL . $endpoint . '?' . http_build_query($params);
 
-    $ch = curl_init($url);
-    curl_setopt_array($ch, [
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_TIMEOUT        => 30,
-        CURLOPT_SSL_VERIFYPEER => true,
-        CURLOPT_USERAGENT      => 'FBManager/1.0',
-    ]);
-    $response = curl_exec($ch);
-    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    curl_close($ch);
+    // Retry transient network failures (DNS, TCP/SSL reset, timeouts).
+    // HTTP-level errors (4xx/5xx with JSON body) are returned as-is so the
+    // caller can surface Facebook's real message.
+    $attempts   = 3;
+    $lastError  = 'cURL request failed';
+    $backoffMs  = 300;
 
-    if ($response === false) {
-        return ['error' => ['message' => 'cURL request failed']];
+    for ($i = 0; $i < $attempts; $i++) {
+        $ch = curl_init($url);
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_CONNECTTIMEOUT => 10,
+            CURLOPT_TIMEOUT        => 30,
+            CURLOPT_SSL_VERIFYPEER => true,
+            CURLOPT_USERAGENT      => 'FBManager/1.0',
+            CURLOPT_ENCODING       => '',
+            CURLOPT_HTTP_VERSION   => CURL_HTTP_VERSION_1_1,
+        ]);
+        $response = curl_exec($ch);
+        $errno    = curl_errno($ch);
+        $errstr   = curl_error($ch);
+        curl_close($ch);
+
+        if ($response !== false && $response !== '') {
+            $data = json_decode($response, true);
+            return $data ?: ['error' => ['message' => 'Invalid JSON response']];
+        }
+
+        $lastError = $errstr ?: 'cURL request failed';
+
+        // Only retry for known-transient errno values.
+        $transient = in_array($errno, [
+            CURLE_COULDNT_RESOLVE_HOST,      // 6
+            CURLE_COULDNT_CONNECT,           // 7
+            CURLE_OPERATION_TIMEOUTED,       // 28
+            CURLE_SSL_CONNECT_ERROR,         // 35
+            CURLE_GOT_NOTHING,               // 52
+            CURLE_SEND_ERROR,                // 55
+            CURLE_RECV_ERROR,                // 56
+        ], true);
+
+        if (!$transient || $i === $attempts - 1) break;
+
+        usleep($backoffMs * 1000);
+        $backoffMs *= 2;
     }
 
-    $data = json_decode($response, true);
-    return $data ?: ['error' => ['message' => 'Invalid JSON response']];
+    return ['error' => ['message' => 'تعذّر الاتصال بـ Facebook حالياً، يرجى المحاولة بعد قليل. (' . $lastError . ')']];
 }
