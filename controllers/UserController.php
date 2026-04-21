@@ -382,7 +382,17 @@ class UserController {
         if (!$id) jsonError('معرّف الحملة مطلوب');
 
         $db = getDB();
-        $stmt = $db->prepare('SELECT * FROM campaigns WHERE id=? AND user_id=? LIMIT 1');
+        $stmt = $db->prepare(
+            "SELECT c.*,
+                    COALESCE(r.amount, 0) AS discount_amount,
+                    cp.code               AS coupon_code,
+                    cp.value              AS coupon_percent
+               FROM campaigns c
+          LEFT JOIN coupon_redemptions r ON r.consumed_in_campaign_id = c.id
+          LEFT JOIN coupons cp           ON cp.id = r.coupon_id
+              WHERE c.id=? AND c.user_id=?
+              LIMIT 1"
+        );
         $stmt->execute([$id, $user['id']]);
         $c = $stmt->fetch();
         if (!$c) jsonError('الحملة غير موجودة', 404);
@@ -420,6 +430,10 @@ class UserController {
             $p['spend']      = applyMarginToSpend((float)$p['spend']);
         }
         unset($p);
+
+        $c['discount_amount'] = round((float)$c['discount_amount'], 2);
+        $c['paid_amount']     = round(max(0.0, (float)$c['budget'] - $c['discount_amount']), 2);
+        $c['has_discount']    = $c['discount_amount'] > 0;
 
         jsonSuccess([
             'campaign'    => $c,
@@ -543,14 +557,25 @@ class UserController {
         $user = requireAuth();
         $db   = getDB();
         $stmt = $db->prepare(
-            'SELECT * FROM campaigns WHERE user_id = ? ORDER BY created_at DESC'
+            "SELECT c.*,
+                    COALESCE(r.amount, 0) AS discount_amount,
+                    cp.code               AS coupon_code,
+                    cp.value              AS coupon_percent
+               FROM campaigns c
+          LEFT JOIN coupon_redemptions r ON r.consumed_in_campaign_id = c.id
+          LEFT JOIN coupons cp           ON cp.id = r.coupon_id
+              WHERE c.user_id = ?
+           ORDER BY c.created_at DESC"
         );
         $stmt->execute([$user['id']]);
         $camps = $stmt->fetchAll();
         foreach ($camps as &$c) {
-            $c['locations']  = json_decode($c['locations'], true);
-            $c['real_spend'] = (float)$c['spend'];
-            $c['spend']      = applyMarginToSpend((float)$c['spend']);
+            $c['locations']       = json_decode($c['locations'], true);
+            $c['real_spend']      = (float)$c['spend'];
+            $c['spend']           = applyMarginToSpend((float)$c['spend']);
+            $c['discount_amount'] = round((float)$c['discount_amount'], 2);
+            $c['paid_amount']     = round(max(0.0, (float)$c['budget'] - $c['discount_amount']), 2);
+            $c['has_discount']    = $c['discount_amount'] > 0;
         }
         jsonSuccess(['campaigns' => $camps]);
     }

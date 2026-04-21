@@ -226,7 +226,16 @@ class AdminController {
         requireAdmin();
         $status = $_GET['status'] ?? '';
         $db     = getDB();
-        $sql    = 'SELECT c.*,u.name as user_name,u.phone FROM campaigns c JOIN users u ON u.id=c.user_id';
+        $sql    = "SELECT c.*,
+                          u.name AS user_name,
+                          u.phone,
+                          COALESCE(r.amount, 0) AS discount_amount,
+                          cp.code               AS coupon_code,
+                          cp.value              AS coupon_percent
+                     FROM campaigns c
+                     JOIN users u                  ON u.id = c.user_id
+                LEFT JOIN coupon_redemptions r     ON r.consumed_in_campaign_id = c.id
+                LEFT JOIN coupons cp               ON cp.id = r.coupon_id";
         if ($status) {
             $stmt = $db->prepare($sql . ' WHERE c.status=? ORDER BY c.created_at DESC');
             $stmt->execute([$status]);
@@ -234,7 +243,12 @@ class AdminController {
             $stmt = $db->query($sql . ' ORDER BY c.created_at DESC');
         }
         $camps = $stmt->fetchAll();
-        foreach ($camps as &$c) $c['locations'] = json_decode($c['locations'], true);
+        foreach ($camps as &$c) {
+            $c['locations']       = json_decode($c['locations'], true);
+            $c['discount_amount'] = round((float)$c['discount_amount'], 2);
+            $c['paid_amount']     = round(max(0.0, (float)$c['budget'] - $c['discount_amount']), 2);
+            $c['has_discount']    = $c['discount_amount'] > 0;
+        }
         jsonSuccess(['campaigns' => $camps]);
     }
 
@@ -254,9 +268,16 @@ class AdminController {
         $c = $cam->fetch();
         if (!$c) jsonError('الحملة غير موجودة');
 
-        // Refund if rejected
+        // Refund if rejected — refund only the amount actually charged
+        // (budget minus any coupon discount that was applied).
         if ($status === 'rejected' && $c['status'] === 'pending') {
-            $db->prepare('UPDATE users SET balance=balance+? WHERE id=?')->execute([$c['budget'], $c['user_id']]);
+            $dStmt = $db->prepare(
+                'SELECT COALESCE(SUM(amount),0) FROM coupon_redemptions WHERE consumed_in_campaign_id=?'
+            );
+            $dStmt->execute([$id]);
+            $discount = (float)$dStmt->fetchColumn();
+            $refund   = max(0.0, (float)$c['budget'] - $discount);
+            $db->prepare('UPDATE users SET balance=balance+? WHERE id=?')->execute([$refund, $c['user_id']]);
         }
 
         $db->prepare('UPDATE campaigns SET status=?,admin_note=? WHERE id=?')->execute([$status, $note, $id]);

@@ -910,16 +910,24 @@ async function loadAdminCamps(status, tabEl) {
 
 function campaignCardAdmin(c) {
   const locs = (c.locations || []).map(l => l.name || l).join(' • ');
+  const hasDiscount = Number(c.discount_amount) > 0;
+  const paid = Number(c.paid_amount != null ? c.paid_amount : c.budget);
   return `
   <div class="campaign-card mb-4" id="adm-camp-${c.id}">
     <div class="campaign-header">
       ${c.post_picture ? `<img src="${esc(c.post_picture)}" class="campaign-thumb">` : `<div class="campaign-thumb flex items-center justify-center" style="font-size:22px"></div>`}
       <div style="flex:1">
-        <div class="font-bold" style="font-size:15px">${esc(c.campaign_name)}</div>
+        <div class="font-bold" style="font-size:15px">
+          ${esc(c.campaign_name)}
+          ${hasDiscount ? `<span class="badge" style="background:#10b981;color:#fff;margin-right:6px;font-size:10px" title="كوبون ${esc(c.coupon_code || '')} — خصم $${Number(c.discount_amount).toFixed(2)}">مع حسم</span>` : ''}
+        </div>
         <div class="text-sm text-muted mt-1">${esc(c.user_name)} · ${esc(c.page_name)}</div>
         <div class="campaign-meta" style="flex-wrap:wrap">
           ${statusBadge(c.status)}
-          <span class="badge badge-blue">$${Number(c.budget).toFixed(2)}</span>
+          ${hasDiscount
+            ? `<span class="badge badge-blue" title="بعد الخصم">$${paid.toFixed(2)}</span>
+               <span class="badge badge-gray" style="text-decoration:line-through;opacity:.75">$${Number(c.budget).toFixed(2)}</span>`
+            : `<span class="badge badge-blue">$${Number(c.budget).toFixed(2)}</span>`}
           <span class="badge badge-gray">${objLabel(c.objective)}</span>
           ${c.duration_days ? `<span class="badge badge-gray">${c.duration_days} يوم</span>` : ''}
         </div>
@@ -1971,6 +1979,13 @@ function userCampaignCard(c, i) {
     : `<span style="font-size:10px;padding:2px 7px;border-radius:10px;background:#1877F2;color:#fff;font-weight:700">f فيسبوك</span>`;
   const noteColor = c.status === 'rejected' ? 'alert-error' : 'alert-info';
   const noteLabel = c.status === 'rejected' ? 'سبب الرفض' : 'ملاحظة الأدمن';
+  const hasDiscount = Number(c.discount_amount) > 0;
+  const paid = Number(c.paid_amount != null ? c.paid_amount : c.budget);
+  const budgetBadge = hasDiscount
+    ? `<span class="badge badge-blue" title="بعد الخصم">$${paid.toFixed(2)}</span>
+       <span class="badge badge-gray" style="text-decoration:line-through;opacity:.75">$${Number(c.budget).toFixed(2)}</span>
+       <span class="badge" style="background:#10b981;color:#fff">خصم ${Number(c.coupon_percent || 0).toFixed(0)}%</span>`
+    : `<span class="badge badge-blue">$${Number(c.budget).toFixed(2)}</span>`;
   return `
   <div class="campaign-card mb-4 animate-fade-up" style="animation-delay:${i*.05}s;cursor:pointer" onclick="openCampaignDetails(${c.id})">
     <div class="campaign-header">
@@ -1980,7 +1995,7 @@ function userCampaignCard(c, i) {
         <div class="text-sm text-muted mt-1" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">${esc(c.page_name)} ${platformBadge}</div>
         <div class="campaign-meta" style="flex-wrap:wrap">
           ${statusBadge(c.status)}
-          <span class="badge badge-blue">$${Number(c.budget).toFixed(2)}</span>
+          ${budgetBadge}
           <span class="badge badge-gray">${objLabel(c.objective)}</span>
           ${c.duration_days ? `<span class="badge badge-gray">${c.duration_days} يوم</span>` : ''}
         </div>
@@ -2017,25 +2032,42 @@ async function openCampaignDetails(id, force) {
   const ctr = c.impressions > 0 ? ((c.clicks / c.impressions) * 100).toFixed(2) : '0.00';
   const locs = (c.locations || []).map(l => l.name || l).join(' • ') || 'لم تحدد';
 
+  const hasDiscount = Number(c.discount_amount) > 0;
+  const paid = Number(c.paid_amount != null ? c.paid_amount : c.budget);
+  const headerBadges = hasDiscount
+    ? `<span class="badge badge-blue" title="بعد الخصم">$${paid.toFixed(2)}</span>
+       <span class="badge badge-gray" style="text-decoration:line-through;opacity:.75">$${Number(c.budget).toFixed(2)}</span>
+       <span class="badge" style="background:#10b981;color:#fff">خصم ${Number(c.coupon_percent || 0).toFixed(0)}%</span>`
+    : `<span class="badge badge-blue">$${Number(c.budget).toFixed(2)}</span>`;
+
   body.innerHTML = `
     <div class="flex gap-3 mb-4" style="background:var(--bg2);padding:12px;border-radius:10px;align-items:center">
       ${c.post_picture ? `<img src="${esc(c.post_picture)}" style="width:60px;height:60px;border-radius:8px;object-fit:cover">` : ''}
       <div style="flex:1">
         <div class="font-bold">${esc(c.campaign_name)}</div>
         <div class="text-sm text-muted">${esc(c.page_name)}</div>
-        <div class="campaign-meta" style="margin-top:6px">
+        <div class="campaign-meta" style="margin-top:6px;flex-wrap:wrap">
           ${statusBadge(c.status)}
-          <span class="badge badge-blue">$${Number(c.budget).toFixed(2)}</span>
+          ${headerBadges}
           <span class="badge badge-gray">${objLabel(c.objective)}</span>
         </div>
       </div>
     </div>
+
+    ${hasDiscount ? `
+    <div class="alert alert-info" style="margin-bottom:14px">
+      <strong>تم تطبيق كوبون${c.coupon_code ? ' «' + esc(c.coupon_code) + '»' : ''}:</strong>
+      خُصم <strong>$${Number(c.discount_amount).toFixed(2)}</strong> من إجمالي الحملة،
+      والمبلغ الفعلي المدفوع <strong>$${paid.toFixed(2)}</strong>.
+    </div>` : ''}
 
     <div class="grid-2 text-sm" style="gap:8px;margin-bottom:14px">
       <div><span class="text-muted">المدة: </span><strong>${c.duration_days || 1} يوم</strong></div>
       <div><span class="text-muted">الجنس: </span><strong>${genderLabel(c.gender)}</strong></div>
       <div><span class="text-muted">العمر: </span><strong>${c.age_min}–${c.age_max}</strong></div>
       <div><span class="text-muted">الميزانية الإجمالية: </span><strong>$${Number(c.budget).toFixed(2)}</strong></div>
+      ${hasDiscount ? `<div><span class="text-muted">قيمة الخصم: </span><strong style="color:#10b981">−$${Number(c.discount_amount).toFixed(2)}</strong></div>` : ''}
+      ${hasDiscount ? `<div><span class="text-muted">المدفوع فعلياً: </span><strong>$${paid.toFixed(2)}</strong></div>` : ''}
       <div style="grid-column:1/-1"><span class="text-muted">المناطق: </span><strong>${esc(locs)}</strong></div>
       ${c.keywords ? `<div style="grid-column:1/-1"><span class="text-muted">كلمات مفتاحية: </span><strong>${esc(c.keywords)}</strong></div>` : ''}
       ${c.post_url ? `<div style="grid-column:1/-1"><span class="text-muted">رابط المنشور: </span><a href="${esc(c.post_url)}" target="_blank" dir="ltr">${esc(c.post_url)}</a></div>` : ''}
