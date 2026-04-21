@@ -11,6 +11,12 @@ try {
     }
 } catch (Exception $e) {}
 
+// Start the session on page load so (a) the CSRF token can be issued and
+// (b) the /api/assets/app-js endpoint can authenticate the browser via
+// its session cookie, blocking anonymous hotlinking/scraping of the bundle.
+sessionStart();
+$csrf = csrfToken();
+
 header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
 header('Pragma: no-cache');
 header('Expires: 0');
@@ -20,6 +26,7 @@ header('Expires: 0');
 <head>
   <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+  <meta name="csrf-token" content="<?php echo htmlspecialchars($csrf, ENT_QUOTES); ?>">
   <meta name="facebook-domain-verification" content="aj8iysm90smz4di7z8cuoe1tu30caq" />
   <title><?php echo $siteName; ?></title>
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
@@ -53,6 +60,6 @@ header('Expires: 0');
   <noscript><div style="text-align:center;padding:60px;font-family:sans-serif;color:#fff;background:#0a0d14;min-height:100vh">يرجى تفعيل JavaScript.</div></noscript>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="/js/icons.js?v=<?php echo $assetVersion; ?>"></script>
-  <script src="/js/app.js?v=<?php echo $assetVersion; ?>"></script>
+  <script src="/api/assets/app-js?v=<?php echo $assetVersion; ?>"></script>
 </body>
 </html>

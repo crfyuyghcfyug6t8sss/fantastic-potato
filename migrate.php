@@ -153,5 +153,16 @@ runStep("site_settings new rows", function () use ($pdo) {
     foreach ($rows as $k => $v) $st->execute([$k, $v]);
 });
 
+// ── rate_limits table ─────────────────────────────────────────
+runStep("rate_limits table", function () use ($pdo, $db) {
+    if (tableExists($pdo, $db, 'rate_limits')) return 'skip';
+    $pdo->exec("CREATE TABLE rate_limits (
+        bucket     VARCHAR(128) NOT NULL PRIMARY KEY,
+        count      INT UNSIGNED NOT NULL DEFAULT 0,
+        window_end INT UNSIGNED NOT NULL,
+        INDEX idx_window_end (window_end)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+});
+
 echo "\n=== اكتمل الترحيل ===\n";
 echo "احذف ملف migrate.php من السيرفر الآن.\n";

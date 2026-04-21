@@ -34,6 +34,23 @@ if (str_starts_with($uri, '/api/')) {
     header('Content-Type: application/json');
     $seg = substr($uri, 5);
 
+    // Ensure a session exists so a CSRF token is available, and so that
+    // gated assets can authenticate the browser via the session cookie.
+    sessionStart();
+    csrfToken();
+
+    // State-changing requests must come from the same origin and carry the
+    // session's CSRF token. GETs are read-only and protected by SameSite=Strict
+    // cookies + per-endpoint authZ, so we don't require CSRF on them.
+    if ($method !== 'GET' && $method !== 'HEAD' && $method !== 'OPTIONS') {
+        sameOriginOrFail();
+        csrfCheckOrFail();
+    }
+
+    // Coarse global IP rate limit on API traffic (defence-in-depth).
+    rateLimitOrFail('api:ip:' . clientIp(), 300, 60,
+        'عدد كبير من الطلبات، يرجى المحاولة بعد قليل');
+
     $routes = [
         'GET:auth/me'                    => ['AuthController',  'me'],
         'POST:auth/send-otp'             => ['AuthController',  'sendOtp'],
@@ -42,6 +59,8 @@ if (str_starts_with($uri, '/api/')) {
         'POST:auth/complete-name'        => ['AuthController',  'completeName'],
         'POST:auth/login'                => ['AuthController',  'login'],
         'POST:auth/logout'               => ['AuthController',  'logout'],
+
+        'GET:assets/app-js'              => ['AssetController', 'appJs'],
 
         'POST:admin/token'               => ['AdminController', 'saveToken'],
         'GET:admin/token-status'         => ['AdminController', 'getTokenStatus'],

@@ -44,15 +44,120 @@ function jsonSuccess(array $data = [], string $message = 'success'): void {
 function sessionStart(): void {
     if (session_status() === PHP_SESSION_NONE) {
         ini_set('session.gc_maxlifetime', SESSION_LIFETIME);
+        $secure = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
+               || (($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https');
         session_set_cookie_params([
             'lifetime' => SESSION_LIFETIME,
             'path'     => '/',
-            'secure'   => false, // set true in production with HTTPS
+            'secure'   => $secure,
             'httponly' => true,
             'samesite' => 'Strict',
         ]);
         session_start();
     }
+}
+
+// ─── Client IP (honours a single trusted proxy hop) ───────────────────────────
+
+function clientIp(): string {
+    // Only the first IP in X-Forwarded-For is semi-trusted. We fall back to
+    // REMOTE_ADDR for anything unparseable. Never trust client-supplied IPs
+    // for auth decisions, only for rate-limit bucketing.
+    $ip = $_SERVER['REMOTE_ADDR'] ?? '0.0.0.0';
+    if (!empty($_SERVER['HTTP_X_FORWARDED_FOR'])) {
+        $first = trim(explode(',', $_SERVER['HTTP_X_FORWARDED_FOR'])[0]);
+        if (filter_var($first, FILTER_VALIDATE_IP)) $ip = $first;
+    }
+    return $ip;
+}
+
+// ─── Rate limiter (fixed window, DB-backed) ───────────────────────────────────
+//
+// Returns remaining slots (>=0 means allowed, <0 means rejected). Buckets
+// expire at `window_end`; a new window starts the next request.
+
+function rateLimitHit(string $bucket, int $max, int $windowSec): int {
+    try {
+        $db  = getDB();
+        $now = time();
+        $key = substr($bucket, 0, 120);
+
+        // Opportunistic GC (cheap, indexed)
+        if (mt_rand(1, 50) === 1) {
+            $db->prepare('DELETE FROM rate_limits WHERE window_end < ?')->execute([$now - 60]);
+        }
+
+        $db->beginTransaction();
+        $sel = $db->prepare('SELECT count, window_end FROM rate_limits WHERE bucket=? FOR UPDATE');
+        $sel->execute([$key]);
+        $row = $sel->fetch();
+
+        if (!$row || (int)$row['window_end'] <= $now) {
+            $db->prepare(
+                'REPLACE INTO rate_limits (bucket, count, window_end) VALUES (?, 1, ?)'
+            )->execute([$key, $now + $windowSec]);
+            $db->commit();
+            return $max - 1;
+        }
+
+        $count = (int)$row['count'] + 1;
+        $db->prepare('UPDATE rate_limits SET count=? WHERE bucket=?')->execute([$count, $key]);
+        $db->commit();
+        return $max - $count;
+    } catch (\Throwable $e) {
+        if (isset($db) && $db->inTransaction()) $db->rollBack();
+        // Fail-open on infrastructure error (better than locking users out);
+        // the other limits (per-phone OTP, SameSite cookies, CSRF) still apply.
+        return $max;
+    }
+}
+
+function rateLimitOrFail(string $bucket, int $max, int $windowSec, string $msg): void {
+    if (rateLimitHit($bucket, $max, $windowSec) < 0) {
+        jsonError($msg, 429);
+    }
+}
+
+// ─── CSRF ─────────────────────────────────────────────────────────────────────
+
+function csrfToken(): string {
+    sessionStart();
+    if (empty($_SESSION['csrf']) || !is_string($_SESSION['csrf'])) {
+        $_SESSION['csrf'] = bin2hex(random_bytes(32));
+    }
+    return $_SESSION['csrf'];
+}
+
+function csrfCheckOrFail(): void {
+    $token = $_SERVER['HTTP_X_CSRF_TOKEN'] ?? '';
+    $want  = $_SESSION['csrf'] ?? '';
+    if (!$want || !is_string($token) || !hash_equals($want, $token)) {
+        jsonError('طلب غير صالح (CSRF)', 403);
+    }
+}
+
+// ─── Same-origin check (Origin/Referer) ───────────────────────────────────────
+
+function sameOriginOrFail(): void {
+    $host   = strtolower($_SERVER['HTTP_HOST'] ?? '');
+    $origin = $_SERVER['HTTP_ORIGIN']  ?? '';
+    $ref    = $_SERVER['HTTP_REFERER'] ?? '';
+
+    $hostOf = static function (string $u): string {
+        $p = parse_url($u);
+        return strtolower($p['host'] ?? '') . (isset($p['port']) ? ':' . $p['port'] : '');
+    };
+
+    if ($origin !== '') {
+        if ($hostOf($origin) !== $host) jsonError('Origin غير مسموح', 403);
+        return;
+    }
+    if ($ref !== '') {
+        if ($hostOf($ref) !== $host) jsonError('Referer غير مسموح', 403);
+        return;
+    }
+    // Neither Origin nor Referer present on a state-changing request — reject.
+    jsonError('طلب بدون مصدر', 403);
 }
 
 function currentUser(): ?array {

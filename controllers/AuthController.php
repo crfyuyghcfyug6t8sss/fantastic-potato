@@ -104,9 +104,16 @@ class AuthController {
         $phone = $this->normalizePhone(trim($data['phone'] ?? ''));
         if (!$phone) jsonError('رقم الهاتف غير صحيح');
 
+        // Per-IP: 5 OTP sends per 15 minutes (abuse / SMS-pumping prevention).
+        rateLimitOrFail('otp:send:ip:' . clientIp(), 5, 900,
+            'عدد كبير من طلبات الرمز من هذا الجهاز، حاول بعد قليل');
+        // Per-phone: 3 sends per 15 minutes on top of the 60s cooldown.
+        rateLimitOrFail('otp:send:phone:' . $phone, 3, 900,
+            'تم طلب الرمز عدة مرات لهذا الرقم، حاول بعد قليل');
+
         $db = getDB();
 
-        // Rate-limit
+        // Short cooldown between successive resends for the same phone.
         $s = $db->prepare(
             'SELECT created_at FROM otp_codes WHERE phone=?
              AND created_at > DATE_SUB(NOW(), INTERVAL ? SECOND) LIMIT 1'
@@ -143,6 +150,10 @@ class AuthController {
         $otp   = trim($data['otp'] ?? '');
         if (!$phone) jsonError('رقم الهاتف غير صحيح');
         if (!preg_match('/^\d{6}$/', $otp)) jsonError('رمز التحقق يجب أن يكون 6 أرقام');
+
+        // Per-IP brute-force ceiling on top of per-OTP try counter.
+        rateLimitOrFail('otp:verify:ip:' . clientIp(), 20, 300,
+            'محاولات كثيرة، يرجى المحاولة بعد قليل');
 
         $this->checkOtp($phone, $otp);
 
@@ -211,6 +222,10 @@ class AuthController {
         $phone = trim($data['phone']   ?? '');
         $pass  = $data['password']     ?? '';
         if (!$phone || !$pass) jsonError('البيانات مطلوبة');
+
+        // Password brute-force ceiling per IP.
+        rateLimitOrFail('login:ip:' . clientIp(), 10, 600,
+            'محاولات كثيرة، يرجى المحاولة بعد قليل');
 
         sessionStart();
 

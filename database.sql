@@ -184,6 +184,14 @@ CREATE TABLE IF NOT EXISTS otp_codes (
     INDEX idx_phone_exp (phone, expires_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- ─── Rate Limits (fixed-window counters) ────────────────────────────────────
+CREATE TABLE IF NOT EXISTS rate_limits (
+    bucket     VARCHAR(128) NOT NULL PRIMARY KEY,
+    count      INT UNSIGNED NOT NULL DEFAULT 0,
+    window_end INT UNSIGNED NOT NULL,
+    INDEX idx_window_end (window_end)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- ─── WhatsApp Messages Log ───────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS wa_messages (
     id           INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,

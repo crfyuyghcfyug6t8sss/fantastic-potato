@@ -1,11 +1,13 @@
 // FB Manager v2 — Full SPA
 
 const API = {
+  _csrf: (document.querySelector('meta[name="csrf-token"]') || {}).content || '',
   async call(method, path, body = null, isForm = false) {
-    const opts = { method, credentials: 'same-origin' };
+    const opts = { method, credentials: 'same-origin', headers: {} };
+    if (method !== 'GET' && method !== 'HEAD') opts.headers['X-CSRF-Token'] = API._csrf;
     if (isForm) { opts.body = body; }
     else {
-      opts.headers = { 'Content-Type': 'application/json' };
+      opts.headers['Content-Type'] = 'application/json';
       if (body) opts.body = JSON.stringify(body);
     }
     const res  = await fetch('/api/' + path, opts);
