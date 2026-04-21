@@ -114,14 +114,8 @@ class AuthController {
         $s->execute([$phone, self::OTP_COOLDOWN]);
         if ($s->fetch()) jsonError('الرجاء الانتظار دقيقة قبل إعادة الإرسال');
 
-        // هل مستخدم موجود؟ وهل أدمن؟
-        $u = $db->prepare('SELECT role FROM users WHERE phone=? LIMIT 1');
-        $u->execute([$phone]);
-        $user      = $u->fetch();
-        $isNewUser = !$user;
-        $isAdmin   = $user && $user['role'] === 'admin';
-
-        // أنشئ OTP وأرسله
+        // Don't leak whether user exists or is admin — the verify step decides
+        // the flow server-side based on the authenticated phone.
         $otp = $this->generateOtp();
         $this->saveOtp($phone, $otp);
 
@@ -136,11 +130,7 @@ class AuthController {
 
         if (random_int(1, 10) === 1) $this->cleanExpired();
 
-        jsonSuccess([
-            'phone'       => $phone,
-            'is_new_user' => $isNewUser,
-            'is_admin'    => $isAdmin,
-        ], 'تم إرسال رمز التحقق إلى واتساب');
+        jsonSuccess(['phone' => $phone], 'تم إرسال رمز التحقق إلى واتساب');
     }
 
     // =========================================================================
@@ -157,12 +147,11 @@ class AuthController {
         $this->checkOtp($phone, $otp);
 
         $db = getDB();
-        $s  = $db->prepare('SELECT * FROM users WHERE phone=? LIMIT 1');
+        $s  = $db->prepare('SELECT id, name, phone, role FROM users WHERE phone=? LIMIT 1');
         $s->execute([$phone]);
         $user = $s->fetch();
 
         if (!$user) {
-            // مستخدم جديد — خزّن علامة التحقق
             $db->prepare(
                 'INSERT INTO otp_codes (phone, code_hash, expires_at, tries, verified)
                  VALUES (?, "", DATE_ADD(NOW(), INTERVAL 10 MINUTE), 0, 1)
@@ -171,12 +160,14 @@ class AuthController {
             jsonSuccess(['needs_name' => true, 'phone' => $phone], 'أدخل اسمك');
         }
 
-        // مستخدم موجود — منع الأدمن من هذا المسار
+        sessionStart();
+
         if ($user['role'] === 'admin') {
-            jsonError('يرجى استخدام مسار تسجيل دخول المدير');
+            // Mark OTP verified; prompt for password via /auth/login.
+            $_SESSION['admin_otp_verified'] = $phone;
+            jsonSuccess(['needs_password' => true], 'أدخل كلمة المرور');
         }
 
-        sessionStart();
         session_regenerate_id(true);
         $_SESSION['user'] = [
             'id' => $user['id'], 'name' => $user['name'],

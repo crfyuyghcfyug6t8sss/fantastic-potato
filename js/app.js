@@ -104,26 +104,6 @@ function authStep(step) {
     setTimeout(() => document.getElementById('f-otp')?.focus(), 50);
     startTimer();
 
-  } else if (step === 'admin-otp') {
-    box.innerHTML = `
-      <div class="a-badge">
-        <span style="color:#25d366">✓</span>
-        <span dir="ltr">${esc(OTP.phone)}</span>
-        <button class="a-link" onclick="authStep('phone')">تغيير</button>
-      </div>
-      <label class="a-label">رمز التحقق (واتساب)</label>
-      <input class="a-otp" id="f-otp" type="text" inputmode="numeric" maxlength="6"
-             placeholder="• • • • • •" autocomplete="one-time-code"
-             oninput="this.value=this.value.replace(/\D/g,'')"
-             onkeydown="if(event.key==='Enter')doAdminOtp()">
-      <button class="a-btn" id="a-btn2" onclick="doAdminOtp()" style="margin-top:14px">متابعة</button>
-      <p class="a-resend">لم يصلك الرمز؟
-        <button id="a-resend-btn" class="a-link bold" onclick="doResend()">إعادة الإرسال</button>
-        <span id="a-timer"></span>
-      </p>`;
-    setTimeout(() => document.getElementById('f-otp')?.focus(), 50);
-    startTimer();
-
   } else if (step === 'admin-pass') {
     box.innerHTML = `
       <label class="a-label">كلمة المرور</label>
@@ -181,16 +161,14 @@ async function doStep1() {
   const res = await API.post('auth/send-otp', { phone: raw });
   setBtn(btn, false, 'متابعة');
   if (res.success) {
-    OTP.phone   = res.phone || raw;
-    OTP.isNew   = !!res.is_new_user;
-    OTP.isAdmin = !!res.is_admin;
-    authStep(OTP.isAdmin ? 'admin-otp' : 'otp');
+    OTP.phone = res.phone || raw;
+    authStep('otp');
   } else {
     setAlert(res.message, 'error');
   }
 }
 
-// ── Step 2: تحقق OTP عادي ───────────────────────────────────────────────────
+// ── Step 2: تحقق OTP (مسار موحّد للجميع) ─────────────────────────────────────
 async function doStep2() {
   const otp = document.getElementById('f-otp')?.value || '';
   const btn = document.getElementById('a-btn2');
@@ -199,31 +177,14 @@ async function doStep2() {
   setBtn(btn, true, 'جاري التحقق...');
   const res = await API.post('auth/verify-otp', { phone: OTP.phone, otp });
   setBtn(btn, false, 'تحقق');
-  if (res.success) {
-    if (res.needs_name) { authStep('name'); return; }
-    clearInterval(OTP.resendInterval);
-    S.user = res.user;
-    goto(res.user.role === 'admin' ? '/admin' : '/dashboard');
-  } else {
-    setAlert(res.message, 'error');
-  }
-}
+  if (!res.success) { setAlert(res.message, 'error'); return; }
 
-// ── Step 2 للأدمن: تحقق OTP ثم كلمة المرور ─────────────────────────────────
-async function doAdminOtp() {
-  const otp = document.getElementById('f-otp')?.value || '';
-  const btn = document.getElementById('a-btn2');
-  setAlert('');
-  if (otp.length !== 6) return setAlert('يرجى إدخال رمز مكوّن من 6 أرقام', 'error');
-  setBtn(btn, true, 'جاري التحقق...');
-  const res = await API.post('auth/verify-admin-otp', { phone: OTP.phone, otp });
-  setBtn(btn, false, 'متابعة');
-  if (res.success) {
-    clearInterval(OTP.resendInterval);
-    authStep('admin-pass');
-  } else {
-    setAlert(res.message, 'error');
-  }
+  if (res.needs_name)     { authStep('name');       return; }
+  if (res.needs_password) { clearInterval(OTP.resendInterval); authStep('admin-pass'); return; }
+
+  clearInterval(OTP.resendInterval);
+  S.user = res.user;
+  goto(res.user.role === 'admin' ? '/admin' : '/dashboard');
 }
 
 // ── Step 3 للأدمن: كلمة المرور ──────────────────────────────────────────────
