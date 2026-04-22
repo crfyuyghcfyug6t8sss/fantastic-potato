@@ -1728,8 +1728,8 @@ function openPromoModal(jsonStr) {
             <div class="form-group">
               <label class="form-label">الجمهور المستهدف (المواقع)</label>
               <div class="search-wrap">
-                <input class="form-control" id="loc-search" placeholder="ابحث عن دولة أو محافظة..." oninput="searchLocations(this.value)">
-              <div class="text-sm text-muted" style="margin-top:4px">الاستهداف على مستوى الدول والمحافظات فقط. لو بحثت عن منطقة صغيرة راح تظهر لك محافظتها.</div>
+                <input class="form-control" id="loc-search" placeholder="ابحث عن دولة أو محافظة أو منطقة..." oninput="searchLocations(this.value)">
+              <div class="text-sm text-muted" style="margin-top:4px">تقدر تختار دولة، محافظة، أو منطقة داخل المحافظة — وراح ترسم على الخريطة بحدودها.</div>
                 <span class="search-icon"></span>
               </div>
               <div id="loc-results" style="margin-top:6px;max-height:120px;overflow-y:auto"></div>
@@ -1847,17 +1847,31 @@ function closePromo() {
 
 function initPromoMap() {
   if (typeof L === 'undefined') return;
-  promoMap = L.map('promo-map', { center: [24, 45], zoom: 4 });
+  promoMap = L.map('promo-map', {
+    center: [34.8, 38.9], zoom: 5,
+    zoomControl: true,
+    zoomSnap: 0.25,
+    worldCopyJump: true,
+    attributionControl: false,
+    fadeAnimation: true,
+  });
+  promoMap.zoomControl.setPosition('topleft');
   L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-    attribution: '©OpenStreetMap ©CartoDB'
+    subdomains: 'abcd', maxZoom: 19,
   }).addTo(promoMap);
+  L.control.attribution({ prefix: false, position: 'bottomleft' })
+    .addAttribution('© OpenStreetMap · © CartoDB')
+    .addTo(promoMap);
+  L.control.scale({ imperial: false, position: 'bottomright', maxWidth: 140 }).addTo(promoMap);
 }
 
-// Location search — only returns countries and provinces/governorates.
-// Neighborhoods, villages, and streets are mapped to their parent province.
-// Results are returned in Arabic (accept-language=ar).
+// Location search — allows countries, provinces, cities, districts, and
+// neighborhoods. Results are returned in Arabic with their administrative
+// hierarchy, and each result carries a polygon (when available) so the
+// selected area can be drawn on the map with its real boundary.
 let _locSearchTimer = null;
 let _locSearchSeq   = 0;
+let _locResults     = [];
 
 function searchLocations(query) {
   clearTimeout(_locSearchTimer);
@@ -1873,22 +1887,33 @@ async function _doSearchLocations(query) {
   const mySeq = ++_locSearchSeq;
   el.innerHTML = '<div class="text-sm text-muted" style="padding:8px">جاري البحث...</div>';
 
-  // Province-like admin levels we accept directly.
-  const PROVINCE_TYPES = new Set([
-    'country', 'state', 'province', 'region',
-    'governorate', 'administrative', 'county'
-  ]);
-  // Fine-grained types that should be lifted to their parent province.
-  const LOCAL_TYPES = new Set([
-    'city', 'town', 'village', 'hamlet', 'suburb', 'neighbourhood',
-    'quarter', 'city_district', 'locality', 'municipality',
-    'residential', 'isolated_dwelling'
-  ]);
+  // Admin levels we surface. Arabic labels for the result badge.
+  const TYPE_LABEL = {
+    country:       'دولة',
+    state:         'محافظة',
+    province:      'محافظة',
+    governorate:   'محافظة',
+    region:        'إقليم',
+    county:        'محافظة',
+    city:          'مدينة',
+    town:          'بلدة',
+    municipality:  'بلدية',
+    village:       'قرية',
+    hamlet:        'قرية',
+    suburb:        'منطقة',
+    neighbourhood: 'حي',
+    quarter:       'حي',
+    city_district: 'منطقة',
+    locality:      'منطقة',
+    administrative:'منطقة',
+  };
+  const ACCEPTED = new Set(Object.keys(TYPE_LABEL));
 
   let data;
   try {
     const url = 'https://nominatim.openstreetmap.org/search'
       + '?format=jsonv2&addressdetails=1&accept-language=ar&limit=15'
+      + '&polygon_geojson=1&polygon_threshold=0.005'
       + '&q=' + encodeURIComponent(query);
     const res = await fetch(url, { credentials: 'omit' });
     data = await res.json();
@@ -1897,96 +1922,134 @@ async function _doSearchLocations(query) {
     el.innerHTML = '<div class="text-sm text-muted" style="padding:8px">تعذّر البحث، حاول مرة أخرى</div>';
     return;
   }
-  if (mySeq !== _locSearchSeq) return; // a newer query superseded this one
+  if (mySeq !== _locSearchSeq) return;
 
   const seen = new Set();
   const out  = [];
 
   for (const item of (data || [])) {
     const t    = (item.addresstype || item.type || '').toLowerCase();
+    if (!ACCEPTED.has(t)) continue;
+
     const addr = item.address || {};
+    const name = addr[t] || item.name || (item.display_name || '').split(',')[0];
+    if (!name) continue;
 
-    // 1) It is already a country.
-    if (t === 'country' || addr.country_code && t === 'administrative' && !addr.state) {
-      const name = addr.country || item.name || item.display_name.split(',')[0];
-      const key  = 'C|' + name;
-      if (!name || seen.has(key)) continue;
-      seen.add(key);
-      out.push({ name, parent: '', lat: item.lat, lon: item.lon, level: 'country' });
-      continue;
-    }
+    // Build a short "breadcrumb" tail for context.
+    const crumbs = [addr.city, addr.town, addr.state, addr.province, addr.region, addr.country]
+      .filter(Boolean).filter(v => v !== name);
+    const tail = Array.from(new Set(crumbs)).slice(0, 2).join(' · ');
 
-    // 2) It is a province / state / governorate.
-    if (PROVINCE_TYPES.has(t) && (addr.state || addr.region || addr.province || addr.county)) {
-      const name    = addr.state || addr.province || addr.region || addr.county || item.name;
-      const country = addr.country || '';
-      const key     = 'P|' + name + '|' + country;
-      if (!name || seen.has(key)) continue;
-      seen.add(key);
-      out.push({ name, parent: country, lat: item.lat, lon: item.lon, level: 'province' });
-      continue;
-    }
+    const key = t + '|' + name + '|' + (addr.state || '') + '|' + (addr.country || '');
+    if (seen.has(key)) continue;
+    seen.add(key);
 
-    // 3) Lift neighborhood / village / city up to its parent province.
-    if (LOCAL_TYPES.has(t) && (addr.state || addr.region || addr.province || addr.county)) {
-      const parentName = addr.state || addr.province || addr.region || addr.county;
-      const country    = addr.country || '';
-      const key        = 'P|' + parentName + '|' + country;
-      if (!parentName || seen.has(key)) continue;
-      seen.add(key);
-      out.push({
-        name:   parentName,
-        parent: country,
-        lat:    item.lat,
-        lon:    item.lon,
-        level:  'province',
-        via:    addr.suburb || addr.neighbourhood || addr.village || addr.town || addr.city || item.name,
-      });
-      continue;
-    }
+    out.push({
+      name,
+      type:    t,
+      label:   TYPE_LABEL[t] || 'منطقة',
+      parent:  tail,
+      lat:     parseFloat(item.lat),
+      lon:     parseFloat(item.lon),
+      geojson: item.geojson || null,
+      bbox:    item.boundingbox ? [
+                 [+item.boundingbox[0], +item.boundingbox[2]],
+                 [+item.boundingbox[1], +item.boundingbox[3]],
+               ] : null,
+    });
+    if (out.length >= 10) break;
   }
 
+  _locResults = out;
   if (!out.length) {
-    el.innerHTML = '<div class="text-sm text-muted" style="padding:8px">لا نتائج — ابحث عن دولة أو محافظة</div>';
+    el.innerHTML = '<div class="text-sm text-muted" style="padding:8px">لا نتائج مطابقة</div>';
     return;
   }
 
-  el.innerHTML = out.slice(0, 8).map(o => {
-    const badge = o.level === 'country'
-      ? '<span class="badge badge-blue" style="font-size:10px">دولة</span>'
-      : '<span class="badge badge-gray" style="font-size:10px">محافظة</span>';
-    const parent = o.parent ? ` <span class="text-muted" style="font-size:11px">· ${esc(o.parent)}</span>` : '';
-    const via    = o.via && o.via !== o.name
-      ? `<div class="text-muted" style="font-size:11px;margin-top:2px">(بحثاً عن: ${esc(o.via)})</div>`
-      : '';
+  const BIG = new Set(['country','state','province','region','governorate','county']);
+  el.innerHTML = out.map((o, i) => {
+    const badgeCls = BIG.has(o.type) ? 'badge-blue' : 'badge-gray';
+    const hasShape = o.geojson && (o.geojson.type === 'Polygon' || o.geojson.type === 'MultiPolygon');
     return `
-    <div onclick="addLocation('${esc(o.name).replace(/'/g,"&#39;")}',${o.lat},${o.lon})"
-         style="padding:8px 12px;border-radius:8px;cursor:pointer;font-size:13px;transition:background .15s;border-bottom:1px solid var(--border)"
-         onmouseover="this.style.background='rgba(59,130,246,.08)'" onmouseout="this.style.background=''">
-      <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
-        ${badge}<strong>${esc(o.name)}</strong>${parent}
+    <div class="loc-result" onclick="addLocationByIdx(${i})">
+      <span class="badge ${badgeCls}" style="font-size:10px;flex-shrink:0">${o.label}</span>
+      <div style="flex:1;min-width:0">
+        <div class="loc-result-name">${esc(o.name)}</div>
+        ${o.parent ? `<div class="loc-result-crumb">${esc(o.parent)}</div>` : ''}
       </div>
-      ${via}
+      ${hasShape ? '<span class="loc-result-shape" title="له حدود على الخريطة"></span>' : ''}
     </div>`;
   }).join('');
 }
 
-function addLocation(name, lat, lon) {
-  if (promoLocations.find(l => l.name === name)) return;
-  promoLocations.push({ name, lat: parseFloat(lat), lon: parseFloat(lon) });
+function addLocationByIdx(idx) {
+  const o = _locResults[idx];
+  if (!o) return;
+  addLocation(o);
+}
+
+// Kept for backward compat with any cached callers.
+function addLocation(o, maybeLat, maybeLon) {
+  if (typeof o === 'string') o = { name: o, lat: parseFloat(maybeLat), lon: parseFloat(maybeLon) };
+  if (!o || !o.name) return;
+  if (promoLocations.find(l => l.name === o.name)) return;
+
+  promoLocations.push({
+    name: o.name, lat: o.lat, lon: o.lon, type: o.type || 'custom',
+  });
   q('#loc-search').value = '';
   q('#loc-results').innerHTML = '';
   renderLocTags();
 
-  if (promoMap) {
-    const marker = L.circleMarker([lat, lon], {
-      radius: 18, color: '#3b82f6', fillColor: '#3b82f6', fillOpacity: 0.35, weight: 2
-    }).addTo(promoMap).bindPopup(name);
-    promoMarkers.push({ name, marker });
+  if (!promoMap) return;
 
-    const bounds = L.latLngBounds(promoLocations.map(l => [l.lat, l.lon]));
-    promoMap.fitBounds(bounds, { padding: [40, 40] });
+  // Two-layer draw: a soft halo underneath, a crisp outline on top. This
+  // gives the selection a "glowing region" look instead of a flat marker.
+  const group = L.layerGroup();
+  const hasPoly = o.geojson && (o.geojson.type === 'Polygon' || o.geojson.type === 'MultiPolygon');
+
+  if (hasPoly) {
+    L.geoJSON(o.geojson, { style: {
+      color: '#60a5fa', weight: 14, opacity: 0.25,
+      fillColor: '#3b82f6', fillOpacity: 0.10,
+      lineJoin: 'round', lineCap: 'round',
+      className: 'promo-halo',
+    }}).addTo(group);
+    L.geoJSON(o.geojson, { style: {
+      color: '#3b82f6', weight: 2.5, opacity: 1,
+      fillColor: '#3b82f6', fillOpacity: 0.22,
+      lineJoin: 'round',
+    }}).bindPopup(`<strong>${esc(o.name)}</strong>`).addTo(group);
+  } else {
+    L.circleMarker([o.lat, o.lon], {
+      radius: 28, weight: 0,
+      fillColor: '#3b82f6', fillOpacity: 0.18,
+      className: 'promo-halo',
+    }).addTo(group);
+    L.circleMarker([o.lat, o.lon], {
+      radius: 10, color: '#fff', weight: 2,
+      fillColor: '#3b82f6', fillOpacity: 0.95,
+    }).bindPopup(`<strong>${esc(o.name)}</strong>`).addTo(group);
   }
+
+  group.addTo(promoMap);
+  promoMarkers.push({ name: o.name, marker: group });
+
+  // Smooth animated zoom to the new shape (or its bbox).
+  try {
+    let bounds = null;
+    if (hasPoly) {
+      group.eachLayer(l => {
+        if (!bounds && l.getBounds) { try { bounds = l.getBounds(); } catch (_) {} }
+      });
+    }
+    if (!bounds && o.bbox) bounds = L.latLngBounds(o.bbox);
+    if (bounds && bounds.isValid()) {
+      promoMap.flyToBounds(bounds, { padding: [30, 30], maxZoom: 12, duration: 0.8 });
+    } else {
+      promoMap.flyTo([o.lat, o.lon], 10, { duration: 0.8 });
+    }
+  } catch (e) {}
 }
 
 function removeLocation(name) {

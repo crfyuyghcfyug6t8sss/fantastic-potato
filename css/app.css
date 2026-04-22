@@ -965,11 +965,132 @@ tr:hover td { background: rgba(255,255,255,.02); }
 
 /* ─── Map container ──────────────────────────────────────────────────────── */
 #promo-map {
-  height: 280px;
-  border-radius: 12px;
-  border: 1px solid var(--border);
+  height: 340px;
+  border-radius: 16px;
+  border: 1px solid var(--border2);
   overflow: hidden;
   margin-top: 10px;
+  box-shadow:
+    0 14px 40px rgba(0,0,0,.35),
+    inset 0 0 0 1px rgba(59,130,246,.10);
+  background: #0e1117;
+  position: relative;
+}
+#promo-map::after {
+  content: '';
+  position: absolute; inset: 0;
+  pointer-events: none;
+  border-radius: 16px;
+  box-shadow: inset 0 0 60px rgba(0,0,0,.45);
+}
+
+/* Leaflet zoom buttons */
+#promo-map .leaflet-bar {
+  border: none !important;
+  box-shadow: 0 4px 14px rgba(0,0,0,.35) !important;
+  border-radius: 10px !important;
+  overflow: hidden;
+}
+#promo-map .leaflet-bar a {
+  background: var(--card) !important;
+  color: var(--text) !important;
+  border-bottom: 1px solid var(--border) !important;
+  width: 32px !important; height: 32px !important;
+  line-height: 32px !important;
+  font-weight: 900;
+  transition: color .15s, background .15s;
+}
+#promo-map .leaflet-bar a:last-child { border-bottom: 0 !important; }
+#promo-map .leaflet-bar a:hover {
+  background: rgba(59,130,246,.15) !important;
+  color: var(--blue) !important;
+}
+
+/* Scale + attribution */
+#promo-map .leaflet-control-scale-line {
+  background: rgba(10,13,20,.65) !important;
+  color: #cbd5e1 !important;
+  border: 1px solid rgba(148,163,184,.25) !important;
+  border-top: none !important;
+  padding: 2px 8px !important;
+  border-radius: 4px !important;
+  font-weight: 600;
+}
+#promo-map .leaflet-control-attribution {
+  background: rgba(10,13,20,.6) !important;
+  color: #94a3b8 !important;
+  font-size: 10px;
+  padding: 2px 8px;
+  border-top-right-radius: 6px;
+}
+
+/* Popup */
+#promo-map .leaflet-popup-content-wrapper {
+  background: var(--card) !important;
+  color: var(--text) !important;
+  border: 1px solid var(--border2) !important;
+  border-radius: 10px !important;
+  box-shadow: 0 10px 30px rgba(0,0,0,.4) !important;
+}
+#promo-map .leaflet-popup-tip { background: var(--card) !important; }
+#promo-map .leaflet-popup-content { font-size: 13px; margin: 8px 12px; }
+
+/* Pulsing halo for selected areas / points */
+#promo-map .promo-halo {
+  animation: promoHaloPulse 2.2s ease-in-out infinite;
+  transform-origin: center;
+  transform-box: fill-box;
+}
+@keyframes promoHaloPulse {
+  0%   { opacity: .30; }
+  50%  { opacity: .08; }
+  100% { opacity: .30; }
+}
+
+/* ─── Location search results ─────────────────────────────────────────────── */
+#loc-results {
+  margin-top: 6px;
+  max-height: 260px;
+  overflow-y: auto;
+  border-radius: 10px;
+}
+#loc-results:not(:empty) {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  padding: 4px;
+}
+.loc-result {
+  display: flex; gap: 10px; align-items: center;
+  padding: 10px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background .15s, transform .12s;
+  font-size: 13px;
+  border-bottom: 1px solid var(--border);
+}
+.loc-result:last-child { border-bottom: 0; }
+.loc-result:hover {
+  background: rgba(59,130,246,.10);
+  transform: translateX(-2px);
+}
+[dir="rtl"] .loc-result:hover { transform: translateX(2px); }
+.loc-result-name { font-weight: 700; color: var(--text); }
+.loc-result-crumb {
+  color: var(--muted);
+  font-size: 11px;
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.loc-result-shape {
+  width: 14px; height: 14px;
+  border: 1.5px solid var(--blue);
+  background: rgba(59,130,246,.25);
+  border-radius: 3px;
+  transform: rotate(8deg);
+  flex-shrink: 0;
+  box-shadow: 0 0 0 3px rgba(59,130,246,.10);
 }
 
 /* ─── Gender pills ───────────────────────────────────────────────────────── */
