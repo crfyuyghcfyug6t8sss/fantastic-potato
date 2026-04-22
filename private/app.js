@@ -1728,8 +1728,8 @@ function openPromoModal(jsonStr) {
             <div class="form-group">
               <label class="form-label">الجمهور المستهدف (المواقع)</label>
               <div class="search-wrap">
-                <input class="form-control" id="loc-search" placeholder="ابحث عن دولة أو محافظة أو منطقة..." oninput="searchLocations(this.value)">
-              <div class="text-sm text-muted" style="margin-top:4px">تقدر تختار دولة، محافظة، أو منطقة داخل المحافظة — وراح ترسم على الخريطة بحدودها.</div>
+                <input class="form-control" id="loc-search" placeholder="ابحث عن دولة أو محافظة..." oninput="searchLocations(this.value)">
+              <div class="text-sm text-muted" style="margin-top:4px">الاستهداف على مستوى الدول والمحافظات فقط. لو بحثت عن منطقة أصغر، بتطلعلك محافظتها بحدودها على الخريطة.</div>
                 <span class="search-icon"></span>
               </div>
               <div id="loc-results" style="margin-top:6px;max-height:120px;overflow-y:auto"></div>
@@ -1865,10 +1865,11 @@ function initPromoMap() {
   L.control.scale({ imperial: false, position: 'bottomright', maxWidth: 140 }).addTo(promoMap);
 }
 
-// Location search — allows countries, provinces, cities, districts, and
-// neighborhoods. Results are returned in Arabic with their administrative
-// hierarchy, and each result carries a polygon (when available) so the
-// selected area can be drawn on the map with its real boundary.
+// Location search — only countries and provinces/governorates are selectable.
+// Anything smaller (city, village, neighborhood) is lifted to its parent
+// province so users never target below محافظة level. Results are returned in
+// Arabic with their administrative hierarchy, and each result carries a
+// polygon (when available) so the selected area can be drawn on the map.
 let _locSearchTimer = null;
 let _locSearchSeq   = 0;
 let _locResults     = [];
@@ -1887,27 +1888,16 @@ async function _doSearchLocations(query) {
   const mySeq = ++_locSearchSeq;
   el.innerHTML = '<div class="text-sm text-muted" style="padding:8px">جاري البحث...</div>';
 
-  // Admin levels we surface. Arabic labels for the result badge.
-  const TYPE_LABEL = {
-    country:       'دولة',
-    state:         'محافظة',
-    province:      'محافظة',
-    governorate:   'محافظة',
-    region:        'إقليم',
-    county:        'محافظة',
-    city:          'مدينة',
-    town:          'بلدة',
-    municipality:  'بلدية',
-    village:       'قرية',
-    hamlet:        'قرية',
-    suburb:        'منطقة',
-    neighbourhood: 'حي',
-    quarter:       'حي',
-    city_district: 'منطقة',
-    locality:      'منطقة',
-    administrative:'منطقة',
-  };
-  const ACCEPTED = new Set(Object.keys(TYPE_LABEL));
+  // Admin levels we surface directly (country + province-equivalents).
+  const PROVINCE_TYPES = new Set([
+    'state', 'province', 'governorate', 'region', 'county', 'administrative',
+  ]);
+  // Types whose results we lift up to their parent province.
+  const LOCAL_TYPES = new Set([
+    'city', 'town', 'municipality', 'village', 'hamlet',
+    'suburb', 'neighbourhood', 'quarter', 'city_district',
+    'locality', 'residential', 'isolated_dwelling',
+  ]);
 
   let data;
   try {
@@ -1927,55 +1917,127 @@ async function _doSearchLocations(query) {
   const seen = new Set();
   const out  = [];
 
-  for (const item of (data || [])) {
-    const t    = (item.addresstype || item.type || '').toLowerCase();
-    if (!ACCEPTED.has(t)) continue;
-
-    const addr = item.address || {};
-    const name = addr[t] || item.name || (item.display_name || '').split(',')[0];
-    if (!name) continue;
-
-    // Build a short "breadcrumb" tail for context.
-    const crumbs = [addr.city, addr.town, addr.state, addr.province, addr.region, addr.country]
-      .filter(Boolean).filter(v => v !== name);
-    const tail = Array.from(new Set(crumbs)).slice(0, 2).join(' · ');
-
-    const key = t + '|' + name + '|' + (addr.state || '') + '|' + (addr.country || '');
-    if (seen.has(key)) continue;
-    seen.add(key);
-
-    out.push({
-      name,
-      type:    t,
-      label:   TYPE_LABEL[t] || 'منطقة',
-      parent:  tail,
-      lat:     parseFloat(item.lat),
-      lon:     parseFloat(item.lon),
-      geojson: item.geojson || null,
-      bbox:    item.boundingbox ? [
-                 [+item.boundingbox[0], +item.boundingbox[2]],
-                 [+item.boundingbox[1], +item.boundingbox[3]],
-               ] : null,
-    });
-    if (out.length >= 10) break;
+  // Helper: fetch polygon for a lifted province by name (only when needed).
+  async function fetchProvincePolygon(name, country) {
+    try {
+      const u = 'https://nominatim.openstreetmap.org/search'
+        + '?format=jsonv2&addressdetails=1&accept-language=ar&limit=1'
+        + '&polygon_geojson=1&polygon_threshold=0.005'
+        + '&featuretype=state'
+        + '&q=' + encodeURIComponent(name + (country ? ', ' + country : ''));
+      const r = await fetch(u, { credentials: 'omit' });
+      const j = await r.json();
+      const it = (j || [])[0];
+      if (!it) return null;
+      return {
+        geojson: it.geojson || null,
+        lat: parseFloat(it.lat),
+        lon: parseFloat(it.lon),
+        bbox: it.boundingbox ? [
+          [+it.boundingbox[0], +it.boundingbox[2]],
+          [+it.boundingbox[1], +it.boundingbox[3]],
+        ] : null,
+      };
+    } catch (_) { return null; }
   }
 
-  _locResults = out;
-  if (!out.length) {
-    el.innerHTML = '<div class="text-sm text-muted" style="padding:8px">لا نتائج مطابقة</div>';
+  // Pass 1 — collect direct country/province hits and "pending" lifted results
+  // that need their polygon fetched separately.
+  const lifted = [];
+  for (const item of (data || [])) {
+    const t    = (item.addresstype || item.type || '').toLowerCase();
+    const addr = item.address || {};
+
+    // Country
+    if (t === 'country') {
+      const name = addr.country || item.name || (item.display_name || '').split(',')[0];
+      const key  = 'C|' + name;
+      if (!name || seen.has(key)) continue;
+      seen.add(key);
+      out.push({
+        name, type: 'country', label: 'دولة', parent: '',
+        lat: parseFloat(item.lat), lon: parseFloat(item.lon),
+        geojson: item.geojson || null,
+        bbox: item.boundingbox ? [
+          [+item.boundingbox[0], +item.boundingbox[2]],
+          [+item.boundingbox[1], +item.boundingbox[3]],
+        ] : null,
+      });
+      continue;
+    }
+
+    // Province-level (directly)
+    if (PROVINCE_TYPES.has(t) && (addr.state || addr.province || addr.region || addr.county)) {
+      const name    = addr.state || addr.province || addr.region || addr.county || item.name;
+      const country = addr.country || '';
+      const key     = 'P|' + name + '|' + country;
+      if (!name || seen.has(key)) continue;
+      seen.add(key);
+      out.push({
+        name, type: 'state', label: 'محافظة',
+        parent: country,
+        lat: parseFloat(item.lat), lon: parseFloat(item.lon),
+        geojson: item.geojson || null,
+        bbox: item.boundingbox ? [
+          [+item.boundingbox[0], +item.boundingbox[2]],
+          [+item.boundingbox[1], +item.boundingbox[3]],
+        ] : null,
+      });
+      continue;
+    }
+
+    // Lift a smaller place up to its parent province.
+    if (LOCAL_TYPES.has(t) && (addr.state || addr.province || addr.region || addr.county)) {
+      const name    = addr.state || addr.province || addr.region || addr.county;
+      const country = addr.country || '';
+      const key     = 'P|' + name + '|' + country;
+      if (!name || seen.has(key)) continue;
+      seen.add(key);
+      // Placeholder entry; polygon fetched in pass 2.
+      const entry = {
+        name, type: 'state', label: 'محافظة',
+        parent: country,
+        via: addr.suburb || addr.neighbourhood || addr.village || addr.town || addr.city || item.name,
+        lat: parseFloat(item.lat), lon: parseFloat(item.lon),
+        geojson: null, bbox: null,
+      };
+      out.push(entry);
+      lifted.push(entry);
+    }
+  }
+
+  // Pass 2 — fetch real polygons for the lifted entries (cap to 3 so we stay
+  // within Nominatim's usage policy on a single user search).
+  await Promise.all(lifted.slice(0, 3).map(async (e) => {
+    const poly = await fetchProvincePolygon(e.name, e.parent);
+    if (!poly) return;
+    if (mySeq !== _locSearchSeq) return;
+    e.geojson = poly.geojson;
+    if (!isNaN(poly.lat)) e.lat = poly.lat;
+    if (!isNaN(poly.lon)) e.lon = poly.lon;
+    if (poly.bbox)        e.bbox = poly.bbox;
+  }));
+  if (mySeq !== _locSearchSeq) return;
+
+  _locResults = out.slice(0, 10);
+  if (!_locResults.length) {
+    el.innerHTML = '<div class="text-sm text-muted" style="padding:8px">لا نتائج — ابحث عن دولة أو محافظة</div>';
     return;
   }
 
-  const BIG = new Set(['country','state','province','region','governorate','county']);
-  el.innerHTML = out.map((o, i) => {
-    const badgeCls = BIG.has(o.type) ? 'badge-blue' : 'badge-gray';
+  el.innerHTML = _locResults.map((o, i) => {
+    const badgeCls = o.type === 'country' ? 'badge-blue' : 'badge-gray';
     const hasShape = o.geojson && (o.geojson.type === 'Polygon' || o.geojson.type === 'MultiPolygon');
+    const via = o.via && o.via !== o.name
+      ? `<div class="loc-result-crumb">نتيجة عن: ${esc(o.via)}</div>`
+      : '';
     return `
     <div class="loc-result" onclick="addLocationByIdx(${i})">
       <span class="badge ${badgeCls}" style="font-size:10px;flex-shrink:0">${o.label}</span>
       <div style="flex:1;min-width:0">
         <div class="loc-result-name">${esc(o.name)}</div>
         ${o.parent ? `<div class="loc-result-crumb">${esc(o.parent)}</div>` : ''}
+        ${via}
       </div>
       ${hasShape ? '<span class="loc-result-shape" title="له حدود على الخريطة"></span>' : ''}
     </div>`;
