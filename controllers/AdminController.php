@@ -454,7 +454,8 @@ class AdminController {
         $data = json_decode(file_get_contents('php://input'), true) ?? [];
         $keys = ['support_whatsapp', 'support_telegram', 'support_form_url',
                  'points_per_dollar', 'points_to_dollar', 'exchange_rate_usd_syp',
-                 'profit_margin_percent', 'fb_ad_account_id'];
+                 'profit_margin_percent', 'fb_ad_account_id',
+                 'min_daily_budget', 'min_total_budget'];
         $db = getDB();
         $stmt = $db->prepare('INSERT INTO site_settings (`key`, value) VALUES (?,?) ON DUPLICATE KEY UPDATE value=?');
         foreach ($keys as $k) {

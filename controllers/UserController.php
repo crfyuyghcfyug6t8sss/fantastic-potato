@@ -242,11 +242,14 @@ class UserController {
         $durationDays = max(1, (int)($data['duration_days'] ?? 1));
         $totalBudget  = $budget * $durationDays;
 
-        if ($budget < 2) {
-            jsonError('الحد الأدنى للميزانية اليومية 2 دولار');
+        $minDaily = max(0.0, (float)($this->getSetting('min_daily_budget') ?? 2));
+        $minTotal = max(0.0, (float)($this->getSetting('min_total_budget') ?? 7));
+
+        if ($budget < $minDaily) {
+            jsonError('الحد الأدنى للميزانية اليومية ' . $minDaily . ' دولار');
         }
-        if ($totalBudget < 7) {
-            jsonError('الحد الأدنى لإجمالي الميزانية 7 دولار');
+        if ($totalBudget < $minTotal) {
+            jsonError('الحد الأدنى لإجمالي الميزانية ' . $minTotal . ' دولار');
         }
         if ($totalBudget > 5000) {
             jsonError('الحد الأقصى لإجمالي الميزانية 5000 دولار');
@@ -663,7 +666,7 @@ class UserController {
         $db     = getDB();
         $public = ['site_name','site_logo','support_whatsapp','support_telegram',
                    'support_form_url','points_per_dollar','points_to_dollar',
-                   'exchange_rate_usd_syp'];
+                   'exchange_rate_usd_syp','min_daily_budget','min_total_budget'];
         $in     = implode(',', array_fill(0, count($public), '?'));
         $stmt   = $db->prepare("SELECT `key`, value FROM site_settings WHERE `key` IN ($in)");
         $stmt->execute($public);

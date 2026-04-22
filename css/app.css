@@ -1437,6 +1437,42 @@ tr:hover td { background: rgba(255,255,255,.02); }
 }
 
 /* ══════════════════════════════════════════════════════════════════════════ */
+/* ─── PROMOTE MODAL — Desktop: visible scrollbar inside modal body ───────── */
+/* ══════════════════════════════════════════════════════════════════════════ */
+@media (min-width: 769px) {
+  #promo-overlay > .modal {
+    display: flex;
+    flex-direction: column;
+    max-height: calc(100vh - 80px);
+  }
+  #promo-overlay .modal-header,
+  #promo-overlay .modal-footer { flex-shrink: 0; }
+  #promo-overlay .modal-body {
+    flex: 1 1 auto;
+    overflow-y: auto;
+    scrollbar-gutter: stable;
+    scrollbar-color: var(--blue) var(--bg2);
+    scrollbar-width: thin;
+  }
+  #promo-overlay .modal-body::-webkit-scrollbar {
+    width: 12px;
+  }
+  #promo-overlay .modal-body::-webkit-scrollbar-track {
+    background: var(--bg2);
+    border-radius: 10px;
+    margin: 6px 0;
+  }
+  #promo-overlay .modal-body::-webkit-scrollbar-thumb {
+    background: var(--border2);
+    border-radius: 10px;
+    border: 2px solid var(--bg2);
+  }
+  #promo-overlay .modal-body::-webkit-scrollbar-thumb:hover {
+    background: var(--blue);
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════════════════ */
 /* ─── PAYMENT HISTORY — responsive cards on mobile ───────────────────────── */
 /* ══════════════════════════════════════════════════════════════════════════ */
 .ph-cards-mobile { display: none; }

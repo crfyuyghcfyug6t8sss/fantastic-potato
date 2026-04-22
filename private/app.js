@@ -1728,7 +1728,8 @@ function openPromoModal(jsonStr) {
             <div class="form-group">
               <label class="form-label">الجمهور المستهدف (المواقع)</label>
               <div class="search-wrap">
-                <input class="form-control" id="loc-search" placeholder="ابحث عن منطقة أو دولة..." oninput="searchLocations(this.value)">
+                <input class="form-control" id="loc-search" placeholder="ابحث عن دولة أو محافظة..." oninput="searchLocations(this.value)">
+              <div class="text-sm text-muted" style="margin-top:4px">الاستهداف على مستوى الدول والمحافظات فقط. لو بحثت عن منطقة صغيرة راح تظهر لك محافظتها.</div>
                 <span class="search-icon"></span>
               </div>
               <div id="loc-results" style="margin-top:6px;max-height:120px;overflow-y:auto"></div>
@@ -1812,10 +1813,12 @@ function syncAge(which) {
 function updateBudgetPreview() {
   const el = document.getElementById('budget-preview');
   if (!el) return;
-  const total = (promoBudget * promoDuration);
+  const total    = (promoBudget * promoDuration);
+  const minDaily = Number(S.siteSettings.min_daily_budget ?? 2);
+  const minTotal = Number(S.siteSettings.min_total_budget ?? 7);
   let warn = '';
-  if (promoBudget < 2)  warn = '<div style="color:var(--red);font-weight:700">الحد الأدنى للميزانية اليومية 2 دولار.</div>';
-  else if (total < 7)   warn = '<div style="color:var(--red);font-weight:700">الحد الأدنى لإجمالي الميزانية 7 دولار.</div>';
+  if (promoBudget < minDaily) warn = `<div style="color:var(--red);font-weight:700">الحد الأدنى للميزانية اليومية ${minDaily} دولار.</div>`;
+  else if (total < minTotal)  warn = `<div style="color:var(--red);font-weight:700">الحد الأدنى لإجمالي الميزانية ${minTotal} دولار.</div>`;
 
   let discountLine = '';
   let finalLine    = '';
@@ -1850,19 +1853,122 @@ function initPromoMap() {
   }).addTo(promoMap);
 }
 
-async function searchLocations(query) {
+// Location search — only returns countries and provinces/governorates.
+// Neighborhoods, villages, and streets are mapped to their parent province.
+// Results are returned in Arabic (accept-language=ar).
+let _locSearchTimer = null;
+let _locSearchSeq   = 0;
+
+function searchLocations(query) {
+  clearTimeout(_locSearchTimer);
   const el = q('#loc-results');
-  if (!query || query.length < 2) { el.innerHTML = ''; return; }
+  if (!query || query.trim().length < 2) { if (el) el.innerHTML = ''; return; }
+  // Debounce to respect Nominatim's 1 req/sec usage policy.
+  _locSearchTimer = setTimeout(() => _doSearchLocations(query.trim()), 350);
+}
 
-  const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&limit=6`);
-  const data = await res.json();
+async function _doSearchLocations(query) {
+  const el = q('#loc-results');
+  if (!el) return;
+  const mySeq = ++_locSearchSeq;
+  el.innerHTML = '<div class="text-sm text-muted" style="padding:8px">جاري البحث...</div>';
 
-  el.innerHTML = data.map(item => `
-    <div onclick="addLocation('${esc(item.display_name.split(',')[0])}',${item.lat},${item.lon})"
+  // Province-like admin levels we accept directly.
+  const PROVINCE_TYPES = new Set([
+    'country', 'state', 'province', 'region',
+    'governorate', 'administrative', 'county'
+  ]);
+  // Fine-grained types that should be lifted to their parent province.
+  const LOCAL_TYPES = new Set([
+    'city', 'town', 'village', 'hamlet', 'suburb', 'neighbourhood',
+    'quarter', 'city_district', 'locality', 'municipality',
+    'residential', 'isolated_dwelling'
+  ]);
+
+  let data;
+  try {
+    const url = 'https://nominatim.openstreetmap.org/search'
+      + '?format=jsonv2&addressdetails=1&accept-language=ar&limit=15'
+      + '&q=' + encodeURIComponent(query);
+    const res = await fetch(url, { credentials: 'omit' });
+    data = await res.json();
+  } catch (e) {
+    if (mySeq !== _locSearchSeq) return;
+    el.innerHTML = '<div class="text-sm text-muted" style="padding:8px">تعذّر البحث، حاول مرة أخرى</div>';
+    return;
+  }
+  if (mySeq !== _locSearchSeq) return; // a newer query superseded this one
+
+  const seen = new Set();
+  const out  = [];
+
+  for (const item of (data || [])) {
+    const t    = (item.addresstype || item.type || '').toLowerCase();
+    const addr = item.address || {};
+
+    // 1) It is already a country.
+    if (t === 'country' || addr.country_code && t === 'administrative' && !addr.state) {
+      const name = addr.country || item.name || item.display_name.split(',')[0];
+      const key  = 'C|' + name;
+      if (!name || seen.has(key)) continue;
+      seen.add(key);
+      out.push({ name, parent: '', lat: item.lat, lon: item.lon, level: 'country' });
+      continue;
+    }
+
+    // 2) It is a province / state / governorate.
+    if (PROVINCE_TYPES.has(t) && (addr.state || addr.region || addr.province || addr.county)) {
+      const name    = addr.state || addr.province || addr.region || addr.county || item.name;
+      const country = addr.country || '';
+      const key     = 'P|' + name + '|' + country;
+      if (!name || seen.has(key)) continue;
+      seen.add(key);
+      out.push({ name, parent: country, lat: item.lat, lon: item.lon, level: 'province' });
+      continue;
+    }
+
+    // 3) Lift neighborhood / village / city up to its parent province.
+    if (LOCAL_TYPES.has(t) && (addr.state || addr.region || addr.province || addr.county)) {
+      const parentName = addr.state || addr.province || addr.region || addr.county;
+      const country    = addr.country || '';
+      const key        = 'P|' + parentName + '|' + country;
+      if (!parentName || seen.has(key)) continue;
+      seen.add(key);
+      out.push({
+        name:   parentName,
+        parent: country,
+        lat:    item.lat,
+        lon:    item.lon,
+        level:  'province',
+        via:    addr.suburb || addr.neighbourhood || addr.village || addr.town || addr.city || item.name,
+      });
+      continue;
+    }
+  }
+
+  if (!out.length) {
+    el.innerHTML = '<div class="text-sm text-muted" style="padding:8px">لا نتائج — ابحث عن دولة أو محافظة</div>';
+    return;
+  }
+
+  el.innerHTML = out.slice(0, 8).map(o => {
+    const badge = o.level === 'country'
+      ? '<span class="badge badge-blue" style="font-size:10px">دولة</span>'
+      : '<span class="badge badge-gray" style="font-size:10px">محافظة</span>';
+    const parent = o.parent ? ` <span class="text-muted" style="font-size:11px">· ${esc(o.parent)}</span>` : '';
+    const via    = o.via && o.via !== o.name
+      ? `<div class="text-muted" style="font-size:11px;margin-top:2px">(بحثاً عن: ${esc(o.via)})</div>`
+      : '';
+    return `
+    <div onclick="addLocation('${esc(o.name).replace(/'/g,"&#39;")}',${o.lat},${o.lon})"
          style="padding:8px 12px;border-radius:8px;cursor:pointer;font-size:13px;transition:background .15s;border-bottom:1px solid var(--border)"
          onmouseover="this.style.background='rgba(59,130,246,.08)'" onmouseout="this.style.background=''">
-      ${esc(item.display_name.slice(0, 60))}
-    </div>`).join('') || '<div class="text-sm text-muted" style="padding:8px">لا نتائج</div>';
+      <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+        ${badge}<strong>${esc(o.name)}</strong>${parent}
+      </div>
+      ${via}
+    </div>`;
+  }).join('');
 }
 
 function addLocation(name, lat, lon) {
@@ -2531,6 +2637,14 @@ async function renderSupportLinks() {
             <input class="form-control" id="sl-adact" dir="ltr" placeholder="act_1234567890">
             <div class="text-sm text-muted" style="margin-top:4px">يُستخدم عند جلب نتائج الحملات من Facebook Graph API. يجب أن يبدأ بـ <code>act_</code>.</div>
           </div>
+          <div class="form-group">
+            <label class="form-label">الحد الأدنى للميزانية اليومية ($)</label>
+            <input class="form-control" id="sl-min-daily" type="number" min="0" step="0.5" value="2">
+          </div>
+          <div class="form-group">
+            <label class="form-label">الحد الأدنى لإجمالي الحملة ($)</label>
+            <input class="form-control" id="sl-min-total" type="number" min="0" step="0.5" value="7">
+          </div>
         </div>
         <button class="btn btn-primary" onclick="saveSupportLinks()">${IC.save} حفظ</button>
       </div>
@@ -2547,6 +2661,8 @@ async function renderSupportLinks() {
     q('#sl-rate').value   = s.exchange_rate_usd_syp || 0;
     q('#sl-margin').value = s.profit_margin_percent ?? 20;
     q('#sl-adact').value  = s.fb_ad_account_id || '';
+    q('#sl-min-daily').value = s.min_daily_budget ?? 2;
+    q('#sl-min-total').value = s.min_total_budget ?? 7;
   }
 }
 
@@ -2560,6 +2676,8 @@ async function saveSupportLinks() {
     exchange_rate_usd_syp: q('#sl-rate').value   || '0',
     profit_margin_percent: q('#sl-margin').value || '0',
     fb_ad_account_id:      (q('#sl-adact').value || '').trim(),
+    min_daily_budget:      q('#sl-min-daily').value || '2',
+    min_total_budget:      q('#sl-min-total').value || '7',
   };
   const res = await API.post('admin/support-links', data);
   if (res.success) {
